@@ -28,6 +28,7 @@ import { DigitalColoringModal } from './DigitalColoringModal';
 import { PageColorTesterCanvas } from './PageColorTesterCanvas';
 import { FavoritesModal } from './FavoritesModal';
 import { FlipBookReader } from './FlipBookReader';
+import { FilmStripNav } from './FilmStripNav';
 import { getFavorites, saveFavorite, removeFavorite, isFavorite } from '../utils/favoritesStorage';
 import { playChimeSound, speakStory, stopSpeaking } from '../utils/kidAudio';
 import confetti from 'canvas-confetti';
@@ -41,6 +42,13 @@ interface ColoringBookViewProps {
   onPrintSinglePage: (page: ColoringPage) => void;
   onPrintStickerSheet?: () => void;
   onLoadFavorite?: (favorite: FavoriteBook) => void;
+  onDownloadPdf?: () => void;
+  isPreparingPdf?: boolean;
+  pdfProgress?: number;
+  isPdfBtnTooltipVisible?: boolean;
+  setIsPdfBtnTooltipVisible?: (visible: boolean) => void;
+  isBookGenerationFinished?: boolean;
+  isGeneratingBook?: boolean;
 }
 
 export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
@@ -52,6 +60,13 @@ export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
   onPrintSinglePage,
   onPrintStickerSheet,
   onLoadFavorite,
+  onDownloadPdf,
+  isPreparingPdf,
+  pdfProgress,
+  isPdfBtnTooltipVisible,
+  setIsPdfBtnTooltipVisible,
+  isBookGenerationFinished,
+  isGeneratingBook,
 }) => {
   const [selectedPreviewImg, setSelectedPreviewImg] = useState<{ url: string; title: string } | null>(null);
   const [regeneratingIds, setRegeneratingIds] = useState<Record<string, boolean>>({});
@@ -60,7 +75,7 @@ export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
   const [favorites, setFavorites] = useState<FavoriteBook[]>(() => getFavorites());
   const [isFavoritesModalOpen, setIsFavoritesModalOpen] = useState(false);
   const [isSavedFavorite, setIsSavedFavorite] = useState(() => isFavorite(book.id, book.theme, book.childName));
-  const [viewMode, setViewMode] = useState<'flip' | 'grid'>('flip');
+  const [viewMode, setViewMode] = useState<'grid' | 'flip'>('grid');
   const [activePageIndex, setActivePageIndex] = useState<number>(0);
   const [activeColoringPage, setActiveColoringPage] = useState<{
     title: string;
@@ -145,115 +160,98 @@ export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
   };
 
   return (
-    <div className="space-y-8">
-      {/* Book Summary & Navigation Bar with Favorites Controls */}
-      <div className="bg-amber-100/70 border-2 border-amber-300/80 rounded-3xl p-4 sm:p-5 flex flex-col md:flex-row items-start md:items-center justify-between gap-4 shadow-xs">
-        <div>
+    <div className="space-y-8 pb-28 sm:pb-36">
+      {/* Warm, Child-Friendly Storybook Header & View Mode Switcher */}
+      <div className="bg-linear-to-r from-amber-100/90 via-orange-50/80 to-amber-100/70 border border-amber-300/80 rounded-3xl p-4 sm:p-6 shadow-sm flex flex-col lg:flex-row items-start lg:items-center justify-between gap-5">
+        <div className="space-y-1.5 flex-1">
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="px-2.5 py-0.5 rounded-full bg-amber-600 text-white text-[11px] font-bold uppercase tracking-wider">
-              Printable Book Ready
+            <span className="px-3 py-1 rounded-full bg-amber-600 text-white text-[11px] font-black uppercase tracking-wider shadow-2xs">
+              ✨ {book.childName}'s Storybook
             </span>
-            <span className="text-xs text-amber-900 font-semibold">
-              Format: {book.resolution} • {book.pages.length} Pages + Cover
+            <span className="px-2.5 py-0.5 rounded-full bg-white/90 border border-amber-200 text-amber-950 text-xs font-bold shadow-2xs">
+              🎨 {book.pages.length} Pages + Cover
             </span>
             {book.difficulty && (
-              <span className="px-2.5 py-0.5 rounded-full bg-white border border-amber-300 text-amber-900 text-[11px] font-bold shadow-2xs">
+              <span className="px-2.5 py-0.5 rounded-full bg-white/90 border border-amber-200 text-amber-900 text-xs font-bold shadow-2xs">
                 {book.difficulty === 'toddler'
-                  ? '🖍️ Toddler: Simple Thick Lines'
+                  ? '🖍️ Toddler: Big Bold Lines'
                   : book.difficulty === 'intricate'
-                  ? '✒️ Intricate Patterns (Ages 8+)'
-                  : '🎨 Kids Standard Outlines'}
+                  ? '✒️ Intricate Patterns'
+                  : '🎨 Easy Kids Outlines'}
               </span>
             )}
           </div>
-          <h3 className="text-lg sm:text-xl font-bold text-gray-900 mt-1" style={{ fontFamily: "'Fredoka', sans-serif" }}>
+          <h2 className="text-xl sm:text-2xl font-black text-gray-900 tracking-tight" style={{ fontFamily: "'Fredoka', sans-serif" }}>
             {book.title}
-          </h3>
-          <p className="text-xs text-gray-700 mt-0.5 italic">
-            "{book.subtitle}" — {book.dedication}
+          </h2>
+          <p className="text-xs sm:text-sm text-gray-700 italic">
+            "{book.subtitle}" — <span className="font-medium">{book.dedication}</span>
           </p>
         </div>
 
-        {/* Favorites & Quick Action Buttons */}
-        <div className="flex items-center gap-2 flex-wrap">
-          {/* Save to Favorites Button */}
-          <button
-            type="button"
-            onClick={handleToggleFavorite}
-            className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-black transition-all cursor-pointer shadow-xs ${
-              isSavedFavorite
-                ? 'bg-amber-500 text-white hover:bg-amber-600 ring-2 ring-amber-300'
-                : 'bg-white text-gray-800 border border-amber-300 hover:bg-amber-50'
-            }`}
-            title={isSavedFavorite ? 'Saved in your favorites!' : 'Save theme & configuration to favorites'}
-          >
-            <Star className={`w-4 h-4 ${isSavedFavorite ? 'fill-yellow-200 text-yellow-100' : 'text-amber-500'}`} />
-            <span>{isSavedFavorite ? '★ Favorited' : 'Save to Favorites'}</span>
-          </button>
+        {/* View Mode Switcher & Favorites */}
+        <div className="flex items-center gap-2.5 flex-wrap self-stretch lg:self-auto justify-between lg:justify-end">
+          {/* Switcher Pills */}
+          <div className="flex items-center gap-1.5 p-1.5 bg-white/95 rounded-2xl border border-amber-300/80 shadow-xs">
+            <button
+              type="button"
+              onClick={() => {
+                setViewMode('grid');
+                playChimeSound('pop');
+              }}
+              className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                viewMode === 'grid'
+                  ? 'bg-amber-500 text-white shadow-sm ring-1 ring-amber-400 font-black'
+                  : 'text-gray-700 hover:text-gray-900 hover:bg-amber-50'
+              }`}
+            >
+              <LayoutGrid className="w-3.5 h-3.5" />
+              <span>🗂️ All Pages Gallery</span>
+            </button>
 
-          {/* Browse Saved Favorites Modal Trigger */}
-          <button
-            type="button"
-            onClick={() => setIsFavoritesModalOpen(true)}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white text-gray-800 hover:bg-amber-50 border border-amber-300 text-xs font-bold transition-all cursor-pointer shadow-xs"
-            title="Browse your saved favorite themes"
-          >
-            <Bookmark className="w-4 h-4 text-amber-600" />
-            <span>My Favorites ({favorites.length})</span>
-          </button>
-        </div>
-      </div>
-
-      {/* View Mode Toggle: Interactive Flip Book vs Grid Overview */}
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 bg-white p-3.5 sm:p-4 rounded-2xl border-2 border-gray-900/80 shadow-xs">
-        <div className="flex items-center gap-2.5">
-          <div className="p-2 rounded-xl bg-amber-500 text-white shadow-2xs">
-            <BookOpen className="w-5 h-5" />
+            <button
+              type="button"
+              onClick={() => {
+                setViewMode('flip');
+                playChimeSound('pageflip');
+              }}
+              className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                viewMode === 'flip'
+                  ? 'bg-amber-500 text-white shadow-sm ring-1 ring-amber-400 font-black'
+                  : 'text-gray-700 hover:text-gray-900 hover:bg-amber-50'
+              }`}
+            >
+              <BookOpen className="w-3.5 h-3.5" />
+              <span>📖 Flip Storybook</span>
+            </button>
           </div>
-          <div>
-            <h4 className="text-sm sm:text-base font-black text-gray-900 leading-tight" style={{ fontFamily: "'Fredoka', sans-serif" }}>
-              Coloring Book Viewer
-            </h4>
-            <p className="text-[11px] text-gray-600">
-              {viewMode === 'flip'
-                ? 'Interactive flip book reader — pages turn with 3D animation and sound effects'
-                : 'All pages grid overview — browse all scenes and jump to any page'}
-            </p>
+
+          {/* Action Buttons */}
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={handleToggleFavorite}
+              className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer shadow-xs ${
+                isSavedFavorite
+                  ? 'bg-amber-500 text-white ring-2 ring-amber-300'
+                  : 'bg-white text-gray-800 border border-amber-300 hover:bg-amber-50'
+              }`}
+              title={isSavedFavorite ? 'Saved in your favorites!' : 'Save book to favorites'}
+            >
+              <Star className={`w-4 h-4 ${isSavedFavorite ? 'fill-yellow-200 text-yellow-100' : 'text-amber-500'}`} />
+              <span>{isSavedFavorite ? 'Favorited' : 'Save'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setIsFavoritesModalOpen(true)}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white text-gray-800 hover:bg-amber-50 border border-amber-300 text-xs font-bold transition-all cursor-pointer shadow-xs"
+              title="Browse your saved favorite themes"
+            >
+              <Bookmark className="w-4 h-4 text-amber-600" />
+              <span>Saved ({favorites.length})</span>
+            </button>
           </div>
-        </div>
-
-        <div className="flex items-center gap-1.5 p-1 bg-gray-100 rounded-xl border border-gray-200 self-stretch sm:self-auto justify-center">
-          <button
-            type="button"
-            onClick={() => {
-              setViewMode('flip');
-              playChimeSound('pageflip');
-            }}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-              viewMode === 'flip'
-                ? 'bg-amber-500 text-white shadow-sm ring-1 ring-amber-400'
-                : 'text-gray-700 hover:text-gray-900 hover:bg-gray-200/60'
-            }`}
-          >
-            <BookOpen className="w-3.5 h-3.5" />
-            <span>📖 Flip Book Mode</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => {
-              setViewMode('grid');
-              playChimeSound('pop');
-            }}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-              viewMode === 'grid'
-                ? 'bg-amber-500 text-white shadow-sm ring-1 ring-amber-400'
-                : 'text-gray-700 hover:text-gray-900 hover:bg-gray-200/60'
-            }`}
-          >
-            <LayoutGrid className="w-3.5 h-3.5" />
-            <span>🗂️ All Pages Grid</span>
-          </button>
         </div>
       </div>
 
@@ -281,17 +279,20 @@ export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
       {viewMode === 'grid' && (
         <div className="space-y-8">
           {/* COVER CARD PREVIEW */}
-          <section className="bg-white rounded-2xl border-2 border-gray-900/80 p-6 shadow-sm relative overflow-hidden">
-            <div className="flex flex-col md:flex-row items-center gap-6">
+          <section
+            id="coloring-book-cover-card"
+            className="bg-linear-to-br from-amber-50/80 via-white to-orange-50/60 rounded-3xl border border-amber-200/90 p-6 sm:p-7 shadow-sm relative overflow-hidden"
+          >
+            <div className="flex flex-col md:flex-row items-center gap-6 sm:gap-8">
               {/* Cover image preview */}
-              <div className="w-full md:w-64 shrink-0 aspect-3/4 border-2 border-dashed border-gray-400 rounded-xl bg-white p-2 shadow-inner flex flex-col items-center justify-center relative group">
+              <div className="w-full md:w-64 shrink-0 aspect-3/4 rounded-2xl bg-white p-2.5 shadow-md border border-amber-200 ring-4 ring-amber-100/70 flex flex-col items-center justify-center relative group overflow-hidden">
                 {book.coverImageUrl ? (
                   <>
                     <img
                       src={book.coverImageUrl}
                       alt="Custom Cover Art"
                       referrerPolicy="no-referrer"
-                      className="w-full h-full object-contain rounded-lg filter contrast-125"
+                      className="w-full h-full object-contain rounded-xl filter contrast-125"
                     />
                     <button
                       onClick={() => setSelectedPreviewImg({ url: book.coverImageUrl!, title: `${book.childName}'s Cover Page` })}
@@ -311,9 +312,9 @@ export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
 
               {/* Cover Details */}
               <div className="flex-1 text-left space-y-3">
-                <div className="flex items-center gap-2">
-                  <div className="inline-block px-3 py-1 rounded-md bg-gray-900 text-white text-xs font-bold uppercase tracking-widest">
-                    ★ Cover Page ★
+                <div className="flex items-center gap-2 flex-wrap">
+                  <div className="inline-block px-3 py-1 rounded-full bg-amber-600 text-white text-xs font-black uppercase tracking-wider shadow-2xs">
+                    ★ Book Cover ★
                   </div>
                   <button
                     type="button"
@@ -322,71 +323,71 @@ export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
                       setViewMode('flip');
                       playChimeSound('pageflip');
                     }}
-                    className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-amber-100 hover:bg-amber-200 text-amber-900 text-[11px] font-bold transition-all cursor-pointer"
+                    className="flex items-center gap-1 px-3 py-1 rounded-full bg-amber-100/80 hover:bg-amber-200 text-amber-900 text-xs font-bold transition-all cursor-pointer"
                   >
-                    <BookOpen className="w-3 h-3" />
-                    <span>📖 Flip to this Page</span>
+                    <BookOpen className="w-3.5 h-3.5" />
+                    <span>Open in Flip Mode</span>
                   </button>
                 </div>
 
-            <h2 className="text-2xl sm:text-3xl font-black text-gray-900 uppercase tracking-tight" style={{ fontFamily: "'Fredoka', sans-serif" }}>
-              {book.childName}'S {book.theme} COLORING BOOK
-            </h2>
+                <h3 className="text-2xl sm:text-3xl font-black text-gray-900 uppercase tracking-tight" style={{ fontFamily: "'Fredoka', sans-serif" }}>
+                  {book.childName}'S {book.theme} COLORING BOOK
+                </h3>
 
-            <p className="text-sm font-medium text-gray-600">
-              {book.subtitle}
-            </p>
+                <p className="text-sm font-medium text-gray-600">
+                  {book.subtitle}
+                </p>
 
-            <div className="p-3.5 rounded-xl bg-amber-50/80 border border-amber-200 text-xs text-amber-950 font-medium space-y-1">
-              <p><strong>Dedication:</strong> {book.dedication}</p>
-              <p className="text-[11px] text-amber-800">
-                <strong>Color Your Own Cover:</strong> Printed with large coloring title fonts so {book.childName} can color their own book cover!
-              </p>
+                <div className="p-3.5 rounded-2xl bg-amber-50/90 border border-amber-200 text-xs text-amber-950 font-medium space-y-1">
+                  <p><strong>Dedication:</strong> {book.dedication}</p>
+                  <p className="text-[11px] text-amber-800">
+                    <strong>Color Your Own Cover:</strong> Printed with large coloring title fonts so {book.childName} can color their own personalized book cover!
+                  </p>
+                </div>
+
+                {/* Actions for Cover */}
+                <div className="flex flex-wrap items-center gap-2.5 pt-1">
+                  {book.coverImageUrl && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        playChimeSound('magic');
+                        setActiveColoringPage({
+                          title: `${book.childName}'s Custom Cover`,
+                          imageUrl: book.coverImageUrl!,
+                          storyCaption: book.subtitle,
+                          funFactOrTip: book.dedication,
+                        });
+                      }}
+                      className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-linear-to-r from-amber-500 via-orange-500 to-amber-600 hover:from-amber-600 hover:to-orange-600 text-white text-xs font-black shadow-sm active:scale-95 transition-all cursor-pointer"
+                    >
+                      <Paintbrush className="w-4 h-4" />
+                      <span>🎨 Color Cover Online!</span>
+                    </button>
+                  )}
+
+                  <button
+                    onClick={onRegenerateCover}
+                    disabled={book.coverStatus === 'generating'}
+                    className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-white hover:bg-amber-50 border border-amber-300 text-amber-900 text-xs font-bold transition-colors disabled:opacity-50 shadow-2xs"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${book.coverStatus === 'generating' ? 'animate-spin' : ''}`} />
+                    <span>{book.coverStatus === 'generating' ? 'Generating Art...' : 'Redo Cover Art'}</span>
+                  </button>
+
+                  {book.coverImageUrl && (
+                    <button
+                      onClick={() => handleDownloadSinglePng(book.coverImageUrl!, `${book.childName}-cover-page`)}
+                      className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-white hover:bg-gray-50 border border-gray-200 text-gray-700 text-xs font-semibold transition-colors shadow-2xs"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>Download Cover PNG</span>
+                    </button>
+                  )}
+                </div>
+              </div>
             </div>
-
-            {/* Actions for Cover */}
-            <div className="flex flex-wrap items-center gap-2 pt-1">
-              {book.coverImageUrl && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    playChimeSound('magic');
-                    setActiveColoringPage({
-                      title: `${book.childName}'s Custom Cover`,
-                      imageUrl: book.coverImageUrl!,
-                      storyCaption: book.subtitle,
-                      funFactOrTip: book.dedication,
-                    });
-                  }}
-                  className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-linear-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white text-xs font-black shadow-xs active:scale-95 transition-all cursor-pointer"
-                >
-                  <Paintbrush className="w-3.5 h-3.5" />
-                  <span>🎨 Color Cover Online!</span>
-                </button>
-              )}
-
-              <button
-                onClick={onRegenerateCover}
-                disabled={book.coverStatus === 'generating'}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-50 hover:bg-amber-100 border border-amber-300 text-amber-900 text-xs font-semibold transition-colors disabled:opacity-50"
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${book.coverStatus === 'generating' ? 'animate-spin' : ''}`} />
-                <span>{book.coverStatus === 'generating' ? 'Generating Art...' : 'Regenerate Cover Art'}</span>
-              </button>
-
-              {book.coverImageUrl && (
-                <button
-                  onClick={() => handleDownloadSinglePng(book.coverImageUrl!, `${book.childName}-cover-page`)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-medium transition-colors"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  <span>Download Cover PNG</span>
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
-      </section>
+          </section>
 
       {/* DISTINCT COLORING PAGES GRID */}
       <div>
@@ -411,12 +412,12 @@ export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
             return (
               <div
                 key={page.id}
-                className="bg-white rounded-2xl border-2 border-gray-800 p-4 shadow-sm flex flex-col justify-between hover:shadow-md transition-shadow relative group"
+                className="bg-white rounded-3xl border border-amber-200/90 p-4 sm:p-5 shadow-xs flex flex-col justify-between hover:shadow-md hover:-translate-y-0.5 transition-all relative group"
                 id={`coloring-page-card-${index + 1}`}
               >
                 {/* Page Number & Status Pill */}
                 <div className="flex items-center justify-between pb-2.5 border-b border-gray-100">
-                  <span className="px-2.5 py-0.5 rounded-md bg-gray-900 text-white text-xs font-bold tracking-wider">
+                  <span className="px-3 py-1 rounded-full bg-amber-500 text-white text-xs font-black tracking-wider shadow-2xs">
                     PAGE {page.pageNumber} OF {book.pages.length}
                   </span>
                   <div className="flex items-center gap-1.5">
@@ -428,7 +429,7 @@ export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
                         setViewMode('flip');
                         playChimeSound('pageflip');
                       }}
-                      className="flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-100 hover:bg-amber-200 text-amber-900 text-[10px] font-bold transition-all cursor-pointer"
+                      className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-amber-100/70 hover:bg-amber-200 text-amber-900 text-[11px] font-bold transition-all cursor-pointer"
                       title="Open in Flip Book mode"
                     >
                       <BookOpen className="w-3 h-3" />
@@ -436,17 +437,17 @@ export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
                     </button>
 
                     {page.status === 'completed' && (
-                      <span className="text-[11px] font-semibold text-emerald-700 flex items-center gap-1 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
+                      <span className="text-[11px] font-bold text-emerald-700 flex items-center gap-1 bg-emerald-50 px-2.5 py-0.5 rounded-full border border-emerald-200">
                         <Check className="w-3 h-3" /> Ready
                       </span>
                     )}
                     {page.status === 'generating' && (
-                      <span className="text-[11px] font-semibold text-amber-700 flex items-center gap-1 bg-amber-50 px-2 py-0.5 rounded-full border border-amber-200">
+                      <span className="text-[11px] font-bold text-amber-700 flex items-center gap-1 bg-amber-50 px-2.5 py-0.5 rounded-full border border-amber-200">
                         <RefreshCw className="w-3 h-3 animate-spin" /> Drawing...
                       </span>
                     )}
                     {page.status === 'error' && (
-                      <span className="text-[11px] font-semibold text-rose-700 flex items-center gap-1 bg-rose-50 px-2 py-0.5 rounded-full border border-rose-200">
+                      <span className="text-[11px] font-bold text-rose-700 flex items-center gap-1 bg-rose-50 px-2.5 py-0.5 rounded-full border border-rose-200">
                         <AlertCircle className="w-3 h-3" /> Retry
                       </span>
                     )}
@@ -454,24 +455,24 @@ export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
                 </div>
 
                 {/* Page Scene Title */}
-                <h4 className="font-bold text-gray-900 text-base mt-2 line-clamp-1" title={page.title}>
+                <h4 className="font-black text-gray-900 text-base mt-2.5 line-clamp-1" title={page.title} style={{ fontFamily: "'Fredoka', sans-serif" }}>
                   {page.title}
                 </h4>
 
                 {/* Main Coloring Art Frame */}
-                <div className="my-3 w-full aspect-3/4 border-2 border-gray-900 rounded-xl bg-white p-2 flex items-center justify-center relative overflow-hidden bg-[radial-gradient(#e5e7eb_1px,transparent_1px)] [background-size:16px_16px]">
+                <div className="my-3 w-full aspect-3/4 border border-gray-200/90 rounded-2xl bg-white p-2.5 flex items-center justify-center relative overflow-hidden shadow-inner group">
                   {page.imageUrl ? (
                     <>
                       <img
                         src={page.imageUrl}
                         alt={page.title}
                         referrerPolicy="no-referrer"
-                        className="w-full h-full object-contain filter contrast-125"
+                        className="w-full h-full object-contain filter contrast-125 rounded-lg"
                       />
                       {/* Zoom button on hover */}
                       <button
                         onClick={() => setSelectedPreviewImg({ url: page.imageUrl!, title: `Page ${page.pageNumber}: ${page.title}` })}
-                        className="absolute inset-0 bg-black/40 text-white opacity-0 group-hover:opacity-100 flex items-center justify-center gap-1.5 font-bold text-xs rounded-xl transition-opacity"
+                        className="absolute inset-0 bg-black/40 text-white opacity-0 group-hover:opacity-100 flex items-center justify-center gap-1.5 font-bold text-xs rounded-2xl transition-opacity"
                       >
                         <ZoomIn className="w-4 h-4" /> Full View
                       </button>
@@ -565,13 +566,13 @@ export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
                     }}
                     className="w-full mb-3 py-2 px-3 rounded-xl bg-linear-to-r from-amber-500 via-orange-500 to-amber-600 hover:from-amber-600 hover:to-orange-600 text-white text-xs font-black flex items-center justify-center gap-1.5 shadow-sm active:scale-95 transition-all cursor-pointer"
                   >
-                    <Paintbrush className="w-3.5 h-3.5" />
-                    <span>🎨 Open Full Color Studio</span>
+                    <Paintbrush className="w-4 h-4" />
+                    <span>🎨 Color This Page Online!</span>
                   </button>
                 )}
 
                 {/* Page Action Bar */}
-                <div className="flex items-center justify-between gap-1.5 pt-2 border-t border-gray-100 text-xs">
+                <div className="flex items-center justify-between gap-1.5 pt-2.5 border-t border-amber-100/80 text-xs">
                   <div className="flex items-center gap-1">
                     {/* Regenerate Button */}
                     <button
@@ -624,10 +625,13 @@ export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
       </div>
 
       {/* PRINTABLE THEMED STICKER SHEET (BONUS ACTIVITY PAGE) */}
-      <section className="bg-linear-to-br from-amber-50 via-orange-50/40 to-yellow-50 rounded-3xl border-2 border-dashed border-amber-400 p-6 sm:p-7 shadow-xs relative overflow-hidden">
+      <section
+        id="coloring-book-sticker-sheet"
+        className="bg-linear-to-br from-amber-50/80 via-orange-50/50 to-yellow-50/60 rounded-3xl border border-amber-200/90 p-6 sm:p-7 shadow-sm relative overflow-hidden"
+      >
         <div className="flex flex-col lg:flex-row items-center gap-6 sm:gap-8">
           {/* Sticker Preview Container */}
-          <div className="w-full sm:w-72 shrink-0 aspect-3/4 bg-white border-2 border-dashed border-gray-800 rounded-2xl p-3 shadow-md relative group flex flex-col items-center justify-center">
+          <div className="w-full sm:w-72 shrink-0 aspect-3/4 bg-white rounded-2xl p-2.5 shadow-md border border-amber-200 ring-4 ring-amber-100/70 relative group overflow-hidden flex flex-col items-center justify-center">
             {book.stickerSheet?.imageUrl ? (
               <>
                 <img
@@ -832,6 +836,23 @@ export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
           setIsFavoritesModalOpen(false);
         }}
         currentBookId={book.id}
+      />
+
+      {/* Side-Scrolling Film Strip Navigation Bar (Quick Jump Thumbnails) */}
+      <FilmStripNav
+        book={book}
+        viewMode={viewMode}
+        activePageIndex={activePageIndex}
+        onSelectSlide={(idx) => {
+          setActivePageIndex(idx);
+        }}
+        onDownloadPdf={onDownloadPdf}
+        isPreparingPdf={isPreparingPdf}
+        pdfProgress={pdfProgress}
+        isPdfBtnTooltipVisible={isPdfBtnTooltipVisible}
+        setIsPdfBtnTooltipVisible={setIsPdfBtnTooltipVisible}
+        isBookGenerationFinished={isBookGenerationFinished}
+        isGeneratingBook={isGeneratingBook}
       />
     </div>
   );

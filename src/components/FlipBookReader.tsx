@@ -216,49 +216,47 @@ export const FlipBookReader: React.FC<FlipBookReaderProps> = ({
 
   return (
     <div className="space-y-4">
-      {/* Flip Book Top Navigation Bar */}
-      <div className="bg-amber-50/90 border-2 border-amber-300/80 rounded-2xl p-3 sm:p-4 shadow-xs">
-        <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pb-3 border-b border-amber-200/80">
-          {/* Previous Page Button */}
+      {/* Clean, Whimsical Storybook Reading Ribbon */}
+      <div className="bg-linear-to-r from-amber-100/90 via-orange-50/80 to-amber-100/80 border border-amber-200 rounded-2xl p-3 sm:p-4 shadow-xs flex flex-col sm:flex-row items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
           <button
             type="button"
             onClick={() => handleGoTo(safeIndex - 1)}
             disabled={safeIndex === 0}
-            className="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-white hover:bg-amber-100/60 text-gray-800 border border-amber-300 text-xs font-bold transition-all disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer shadow-2xs w-full sm:w-auto justify-center"
+            className="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-white hover:bg-amber-50 text-amber-950 border border-amber-300 text-xs font-bold transition-all disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer shadow-2xs"
           >
             <ChevronLeft className="w-4 h-4 text-amber-700" />
-            <span>Prev Page (←)</span>
+            <span>Prev Page</span>
           </button>
 
-          {/* Progress Status Indicator */}
-          <div className="text-center">
-            <div className="flex items-center justify-center gap-2">
-              <span className="text-xs font-black uppercase tracking-wider text-amber-950">
-                {currentSlide.navLabel}
-              </span>
-              <span className="text-[11px] text-amber-800 font-semibold bg-amber-200/60 px-2 py-0.5 rounded-full">
-                {safeIndex + 1} of {slides.length}
-              </span>
-            </div>
-            <p className="text-[11px] text-gray-600 mt-0.5 truncate max-w-xs sm:max-w-md font-medium">
-              {currentSlide.title}
-            </p>
-          </div>
-
-          {/* Next Page Button */}
           <button
             type="button"
             onClick={() => handleGoTo(safeIndex + 1)}
             disabled={safeIndex === slides.length - 1}
-            className="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold transition-all disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer shadow-2xs w-full sm:w-auto justify-center"
+            className="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold transition-all disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer shadow-2xs"
           >
-            <span>Next Page (→)</span>
+            <span>Next Page</span>
             <ChevronRight className="w-4 h-4" />
           </button>
         </div>
 
-        {/* Page Selector Pills Strip */}
-        <div className="flex items-center gap-1.5 overflow-x-auto pt-2.5 pb-1 scrollbar-thin">
+        {/* Current Slide Info */}
+        <div className="text-center">
+          <div className="flex items-center justify-center gap-2">
+            <span className="px-2.5 py-0.5 rounded-full bg-amber-600 text-white text-xs font-black uppercase tracking-wider shadow-2xs">
+              {currentSlide.navLabel}
+            </span>
+            <span className="text-xs text-amber-900 font-bold">
+              Page {safeIndex + 1} of {slides.length}
+            </span>
+          </div>
+          <p className="text-xs text-gray-700 mt-0.5 truncate max-w-xs sm:max-w-md font-semibold">
+            {currentSlide.title}
+          </p>
+        </div>
+
+        {/* Quick Slide Dots Strip */}
+        <div className="flex items-center gap-1.5 overflow-x-auto max-w-full py-1">
           {slides.map((slide, idx) => {
             const isActive = idx === safeIndex;
             return (
@@ -266,34 +264,24 @@ export const FlipBookReader: React.FC<FlipBookReaderProps> = ({
                 key={slide.id}
                 type="button"
                 onClick={() => handleGoTo(idx)}
-                className={`shrink-0 px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                className={`w-7 h-7 rounded-lg text-[11px] font-bold transition-all cursor-pointer flex items-center justify-center ${
                   isActive
-                    ? 'bg-gray-900 text-white shadow-sm ring-2 ring-amber-400 scale-105'
-                    : 'bg-white hover:bg-amber-100/80 text-gray-700 border border-amber-200'
+                    ? 'bg-amber-600 text-white shadow-sm ring-2 ring-amber-400 scale-110'
+                    : 'bg-white hover:bg-amber-100 text-gray-700 border border-amber-200'
                 }`}
+                title={slide.title}
               >
-                {slide.type === 'cover' && <span>📕</span>}
-                {slide.type === 'stickers' && <span>✂️</span>}
-                {slide.type === 'page' && <span>📄</span>}
-                <span>{slide.navLabel}</span>
+                {slide.type === 'cover' ? '📕' : slide.type === 'stickers' ? '✂️' : idx}
               </button>
             );
           })}
-        </div>
-
-        {/* Interactive Book Reading Progress Bar */}
-        <div className="w-full bg-amber-200/60 h-1.5 rounded-full mt-2 overflow-hidden">
-          <div
-            className="bg-amber-500 h-full transition-all duration-300 rounded-full"
-            style={{ width: `${((safeIndex + 1) / slides.length) * 100}%` }}
-          />
         </div>
       </div>
 
       {/* PARENT CONTAINER WITH ANIMATED PAGE FLIP TRANSITIONS */}
       <div
         id="coloring-book-pages-container"
-        className="relative w-full rounded-3xl bg-linear-to-b from-amber-50/50 via-white to-orange-50/40 p-4 sm:p-7 border-2 border-gray-900 shadow-xl overflow-hidden select-none"
+        className="relative w-full rounded-3xl bg-linear-to-b from-amber-50/50 via-white to-orange-50/40 p-4 sm:p-7 border border-amber-200/90 shadow-lg overflow-hidden select-none"
         style={{ perspective: 1400 }}
       >
         {/* Floating Left Turn Arrow Button */}
@@ -301,7 +289,7 @@ export const FlipBookReader: React.FC<FlipBookReaderProps> = ({
           type="button"
           onClick={() => handleGoTo(safeIndex - 1)}
           disabled={safeIndex === 0}
-          className="absolute left-2 sm:left-4 top-1/2 -translate-y-1/2 z-20 w-10 h-10 sm:w-12 sm:h-12 rounded-full bg-white/95 hover:bg-amber-50 border-2 border-gray-900 shadow-lg flex items-center justify-center text-gray-900 transition-all hover:scale-110 active:scale-95 disabled:opacity-20 disabled:hover:scale-100 disabled:cursor-not-allowed cursor-pointer"
+          className="absolute left-2 sm:left-4 top-1/2 -translate-y-1/2 z-20 w-10 h-10 sm:w-12 sm:h-12 rounded-full bg-white/95 hover:bg-amber-50 border border-amber-300 shadow-md flex items-center justify-center text-amber-900 transition-all hover:scale-110 active:scale-95 disabled:opacity-20 disabled:hover:scale-100 disabled:cursor-not-allowed cursor-pointer"
           title="Flip to Previous Page (←)"
         >
           <ChevronLeft className="w-6 h-6" />
@@ -312,7 +300,7 @@ export const FlipBookReader: React.FC<FlipBookReaderProps> = ({
           type="button"
           onClick={() => handleGoTo(safeIndex + 1)}
           disabled={safeIndex === slides.length - 1}
-          className="absolute right-2 sm:right-4 top-1/2 -translate-y-1/2 z-20 w-10 h-10 sm:w-12 sm:h-12 rounded-full bg-white/95 hover:bg-amber-50 border-2 border-gray-900 shadow-lg flex items-center justify-center text-gray-900 transition-all hover:scale-110 active:scale-95 disabled:opacity-20 disabled:hover:scale-100 disabled:cursor-not-allowed cursor-pointer"
+          className="absolute right-2 sm:right-4 top-1/2 -translate-y-1/2 z-20 w-10 h-10 sm:w-12 sm:h-12 rounded-full bg-white/95 hover:bg-amber-50 border border-amber-300 shadow-md flex items-center justify-center text-amber-900 transition-all hover:scale-110 active:scale-95 disabled:opacity-20 disabled:hover:scale-100 disabled:cursor-not-allowed cursor-pointer"
           title="Flip to Next Page (→)"
         >
           <ChevronRight className="w-6 h-6" />
@@ -328,20 +316,20 @@ export const FlipBookReader: React.FC<FlipBookReaderProps> = ({
             animate="center"
             exit="exit"
             style={{ transformStyle: 'preserve-3d' }}
-            className="w-full bg-white rounded-2xl border-2 border-gray-900/80 p-4 sm:p-7 shadow-md"
+            className="w-full bg-white rounded-3xl border border-amber-200/80 p-4 sm:p-7 shadow-sm"
           >
             {/* 1. SLIDE: COVER PAGE */}
             {currentSlide.type === 'cover' && (
               <div className="flex flex-col md:flex-row items-center gap-6 sm:gap-8">
                 {/* Cover Artwork Preview */}
-                <div className="w-full md:w-72 shrink-0 aspect-3/4 border-2 border-dashed border-gray-400 rounded-xl bg-white p-2 shadow-inner flex flex-col items-center justify-center relative group">
+                <div className="w-full md:w-72 shrink-0 aspect-3/4 rounded-2xl bg-white p-2.5 shadow-md border border-amber-200 ring-4 ring-amber-100/70 flex flex-col items-center justify-center relative group overflow-hidden">
                   {book.coverImageUrl ? (
                     <>
                       <img
                         src={book.coverImageUrl}
                         alt="Custom Cover Art"
                         referrerPolicy="no-referrer"
-                        className="w-full h-full object-contain rounded-lg filter contrast-125"
+                        className="w-full h-full object-contain rounded-xl filter contrast-125"
                       />
                       <button
                         onClick={() => onZoomImage({ url: book.coverImageUrl!, title: `${book.childName}'s Cover Page` })}
@@ -361,7 +349,7 @@ export const FlipBookReader: React.FC<FlipBookReaderProps> = ({
 
                 {/* Cover Details & Actions */}
                 <div className="flex-1 text-left space-y-3.5">
-                  <div className="inline-block px-3 py-1 rounded-md bg-gray-900 text-white text-xs font-bold uppercase tracking-widest">
+                  <div className="inline-block px-3 py-1 rounded-full bg-amber-600 text-white text-xs font-black uppercase tracking-wider shadow-2xs">
                     ★ Book Cover ★
                   </div>
 
@@ -433,7 +421,7 @@ export const FlipBookReader: React.FC<FlipBookReaderProps> = ({
                 <div className="flex flex-col lg:flex-row gap-6 sm:gap-8 items-start">
                   {/* Left: Line Art + Color Tester + Studio CTA */}
                   <div className="w-full lg:w-96 shrink-0 flex flex-col gap-3">
-                    <div className="w-full aspect-3/4 bg-white border-2 border-dashed border-gray-400 rounded-2xl p-2 relative group overflow-hidden shadow-inner flex flex-col items-center justify-center">
+                    <div className="w-full aspect-3/4 bg-white rounded-2xl p-2.5 shadow-md border border-amber-200 ring-4 ring-amber-100/70 relative group overflow-hidden flex flex-col items-center justify-center">
                       {page.imageUrl ? (
                         <>
                           <img

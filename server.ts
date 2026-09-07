@@ -45,12 +45,14 @@ app.post('/api/plan-book', async (req, res) => {
     const {
       theme = 'space dinosaurs',
       childName = 'Little Explorer',
+      customTitle = '',
       userNotes = '',
       pageCount = 5,
       difficulty = 'standard',
     } = req.body;
 
     const validPageCount = Math.max(1, Math.min(12, Number(pageCount) || 5));
+    const explicitTitle = typeof customTitle === 'string' ? customTitle.trim() : '';
     const ai = getGenAI();
 
     let difficultyInstruction = '';
@@ -81,7 +83,7 @@ ${difficultyInstruction}
 ${userNotes ? `Additional user instructions: ${userNotes}` : ''}
 
 CRITICAL RULES:
-1. Provide a catchy, joyful title (e.g. "${childName}'s ${theme} Adventure") and subtitle.
+1. ${explicitTitle ? `PREFERRED BOOK TITLE OVERRIDE: The user has explicitly chosen the book title: "${explicitTitle}". You MUST use "${explicitTitle}" as the bookTitle.` : `Provide a catchy, joyful title (e.g. "${childName}'s ${theme} Adventure") and subtitle.`}
 2. Provide a heartwarming dedication for ${childName}.
 3. Create exactly ${validPageCount} distinct, sequential coloring book scenes that tell a mini adventure. Ensure each page depicts a clearly different, creative action or setting within the theme so the scenes are varied and exciting.
 4. Each scene MUST have:
@@ -125,12 +127,131 @@ CRITICAL RULES:
     });
 
     const parsed = JSON.parse(response.text || '{}');
+    if (explicitTitle) {
+      parsed.bookTitle = explicitTitle;
+    }
     return res.json({ success: true, plan: parsed });
   } catch (error: any) {
     console.error('Error planning book:', error);
     return res.status(500).json({
       success: false,
       error: error.message || 'Failed to generate coloring book plan',
+    });
+  }
+});
+
+// Endpoint: AI-powered creative trending theme inspiration based on child's name
+app.post('/api/inspire-themes', async (req, res) => {
+  try {
+    const { childName = '' } = req.body;
+    const cleanName = typeof childName === 'string' ? childName.trim() : '';
+    const ai = getGenAI();
+
+    const prompt = `You are an imaginative children's book author and coloring book designer.
+Generate a list of exactly 3 creative, trending, fun, and age-appropriate coloring book themes${
+      cleanName ? ` inspired specifically for the child named "${cleanName}"` : ' for an adventurous child'
+    }.
+
+Guidelines:
+1. Provide exactly 3 distinct, highly engaging, trending themes that modern kids love (e.g. whimsical animal bakeries, zero-gravity space pups, enchanted dinosaur treehouses, underwater submarine coral quests, robot safari sanctuary, fairy garden inventors, etc.).
+2. For each theme provide:
+   - theme: A concise, punchy theme title suitable for a coloring book prompt (e.g., "Galactic Space Pups", "Underwater Coral Castle", "Dino Treehouse Bakery").
+   - suggestedTitle: A catchy, joyful coloring book title tailored with the child's name${
+     cleanName ? ` (incorporating "${cleanName}")` : ''
+   } (e.g., "${cleanName || 'Explorer'}'s Galactic Space Pups Adventure").
+   - description: A vibrant, 1-2 sentence description explaining what the child will color in this theme.
+   - emoji: 1 or 2 fun emojis representing this theme.
+   - tag: A short trending badge or category (e.g., "Trending Now", "Space & Sci-Fi", "Whimsical Animals", "Ocean Quest").
+   - sampleScenes: An array of 3 brief bullet points of coloring scenes they would color.`;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.8-flash',
+      contents: prompt,
+      config: {
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            themes: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  theme: { type: Type.STRING },
+                  suggestedTitle: { type: Type.STRING },
+                  description: { type: Type.STRING },
+                  emoji: { type: Type.STRING },
+                  tag: { type: Type.STRING },
+                  sampleScenes: {
+                    type: Type.ARRAY,
+                    items: { type: Type.STRING },
+                  },
+                },
+                required: ['theme', 'suggestedTitle', 'description', 'emoji', 'tag'],
+              },
+            },
+          },
+          required: ['themes'],
+        },
+      },
+    });
+
+    const parsed = JSON.parse(response.text || '{}');
+    return res.json({ success: true, themes: parsed.themes || [] });
+  } catch (error: any) {
+    console.error('Error generating inspiration themes:', error);
+    const fallbackName =
+      typeof req.body?.childName === 'string' && req.body.childName.trim()
+        ? req.body.childName.trim()
+        : 'Explorer';
+
+    const fallbackThemes = [
+      {
+        theme: 'Galactic Puppy Space Rescue',
+        suggestedTitle: `${fallbackName}'s Galactic Space Pups Adventure`,
+        description:
+          'Brave astronaut puppies in bubble helmets zooming through asteroid belts and discovering cheese-crater moons!',
+        emoji: '🚀🐶',
+        tag: 'Trending Now',
+        sampleScenes: [
+          'Puppy captain piloting a starship',
+          'Floating in zero-gravity with star bones',
+          'Landing on a rainbow comet playground',
+        ],
+      },
+      {
+        theme: 'Enchanted Forest Treehouse Bakery',
+        suggestedTitle: `${fallbackName}'s Woodland Bakery Mystery`,
+        description:
+          'Friendly woodland creatures baking giant berry pies and honey cakes inside a magical hollowed oak tree!',
+        emoji: '🧁🐿️',
+        tag: 'Whimsical & Cozy',
+        sampleScenes: [
+          'Squirrel chef measuring acorns and flour',
+          'Bear delivering warm blackberry tarts',
+          'Hedgehog tea party under fairy lights',
+        ],
+      },
+      {
+        theme: 'Submarine Coral Reef Safari',
+        suggestedTitle: `${fallbackName}'s Deep Sea Coral Quest`,
+        description:
+          'A cheerful yellow submarine exploring glowing neon coral reefs, friendly dolphins, and sunken treasure chests!',
+        emoji: '🌊🐠',
+        tag: 'Ocean Adventure',
+        sampleScenes: [
+          'Playful octopus wearing a captain hat',
+          'Dolphins racing beside the submarine',
+          'Glowing jellyfish night garden',
+        ],
+      },
+    ];
+
+    return res.json({
+      success: true,
+      themes: fallbackThemes,
+      isFallback: true,
+      errorNotice: error.message,
     });
   }
 });

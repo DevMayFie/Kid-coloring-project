@@ -1,12 +1,43 @@
 import React, { useState } from 'react';
-import { Sparkles, Wand2, User, Layers, Sliders, ChevronDown, Check, HelpCircle, FileText, Plus, Minus, Paintbrush, Compass } from 'lucide-react';
+import {
+  Sparkles,
+  Wand2,
+  User,
+  Layers,
+  Sliders,
+  ChevronDown,
+  Check,
+  HelpCircle,
+  FileText,
+  Plus,
+  Minus,
+  Paintbrush,
+  Compass,
+  BookOpen,
+  Lightbulb,
+  Loader2,
+  RefreshCw,
+  X,
+  ArrowRight,
+} from 'lucide-react';
 import { ImageResolution, AspectRatio, ColoringDifficulty } from '../types';
 import { POPULAR_THEMES } from '../utils/sampleData';
 import { KidStoryBuilder } from './KidStoryBuilder';
+import { playChimeSound } from '../utils/kidAudio';
+
+export interface InspirationTheme {
+  theme: string;
+  suggestedTitle: string;
+  description: string;
+  emoji: string;
+  tag: string;
+  sampleScenes?: string[];
+}
 
 interface BookFormProps {
   initialTheme: string;
   initialChildName: string;
+  initialCustomTitle?: string;
   initialPageCount?: number;
   initialDifficulty?: ColoringDifficulty;
   initialResolution: ImageResolution;
@@ -15,6 +46,7 @@ interface BookFormProps {
   onGenerateBook: (options: {
     theme: string;
     childName: string;
+    customTitle?: string;
     pageCount: number;
     difficulty: ColoringDifficulty;
     resolution: ImageResolution;
@@ -26,6 +58,7 @@ interface BookFormProps {
 export const BookForm: React.FC<BookFormProps> = ({
   initialTheme,
   initialChildName,
+  initialCustomTitle = '',
   initialPageCount = 5,
   initialDifficulty = 'standard',
   initialResolution,
@@ -35,6 +68,7 @@ export const BookForm: React.FC<BookFormProps> = ({
 }) => {
   const [theme, setTheme] = useState(initialTheme);
   const [childName, setChildName] = useState(initialChildName);
+  const [customTitle, setCustomTitle] = useState(initialCustomTitle);
   const [pageCount, setPageCount] = useState<number>(initialPageCount);
   const [difficulty, setDifficulty] = useState<ColoringDifficulty>(initialDifficulty);
   const [resolution, setResolution] = useState<ImageResolution>(initialResolution);
@@ -42,6 +76,49 @@ export const BookForm: React.FC<BookFormProps> = ({
   const [userNotes, setUserNotes] = useState('');
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [themeMode, setThemeMode] = useState<'kid-magic' | 'custom'>('kid-magic');
+
+  // Theme Inspiration state
+  const [inspirationThemes, setInspirationThemes] = useState<InspirationTheme[]>([]);
+  const [isLoadingInspiration, setIsLoadingInspiration] = useState(false);
+  const [showInspirationPanel, setShowInspirationPanel] = useState(false);
+  const [inspirationError, setInspirationError] = useState<string | null>(null);
+
+  const handleGetInspiration = async () => {
+    setIsLoadingInspiration(true);
+    setInspirationError(null);
+    setShowInspirationPanel(true);
+    playChimeSound('magic');
+
+    try {
+      const response = await fetch('/api/inspire-themes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          childName: childName.trim(),
+        }),
+      });
+
+      const data = await response.json();
+      if (data.success && Array.isArray(data.themes) && data.themes.length > 0) {
+        setInspirationThemes(data.themes);
+      } else {
+        throw new Error(data.error || 'Could not fetch creative themes.');
+      }
+    } catch (err: any) {
+      console.error('Error getting inspiration:', err);
+      setInspirationError(err.message || 'Failed to load theme ideas. Please try again.');
+    } finally {
+      setIsLoadingInspiration(false);
+    }
+  };
+
+  const handleApplyInspiration = (item: InspirationTheme) => {
+    setTheme(item.theme);
+    if (item.suggestedTitle) {
+      setCustomTitle(item.suggestedTitle);
+    }
+    playChimeSound('sparkle');
+  };
 
   // Check if current theme matches one of the popular presets
   const matchedPreset = POPULAR_THEMES.find(
@@ -72,6 +149,7 @@ export const BookForm: React.FC<BookFormProps> = ({
     onGenerateBook({
       theme: theme.trim(),
       childName: childName.trim(),
+      customTitle: customTitle.trim() || undefined,
       pageCount: validatedPageCount,
       difficulty,
       resolution,
@@ -103,10 +181,32 @@ export const BookForm: React.FC<BookFormProps> = ({
         <div className="grid grid-cols-1 sm:grid-cols-12 gap-4">
           {/* Child Name */}
           <div className="sm:col-span-7">
-            <label htmlFor="child-name-input" className="block text-xs font-bold uppercase tracking-wider text-gray-700 mb-1.5 flex items-center gap-1.5">
-              <User className="w-3.5 h-3.5 text-amber-600" />
-              Child's Name
-            </label>
+            <div className="flex items-center justify-between mb-1.5">
+              <label htmlFor="child-name-input" className="block text-xs font-bold uppercase tracking-wider text-gray-700 flex items-center gap-1.5">
+                <User className="w-3.5 h-3.5 text-amber-600" />
+                Child's First Name
+              </label>
+              <button
+                type="button"
+                id="get-inspiration-btn"
+                onClick={handleGetInspiration}
+                disabled={isLoadingInspiration}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-linear-to-r from-amber-500 via-orange-500 to-amber-600 hover:from-amber-600 hover:to-orange-700 text-white text-[11px] font-bold shadow-2xs transition-all cursor-pointer disabled:opacity-60 active:scale-95"
+                title="Get 3 creative, trending coloring book themes tailored to this child's name"
+              >
+                {isLoadingInspiration ? (
+                  <>
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                    <span>Thinking...</span>
+                  </>
+                ) : (
+                  <>
+                    <Lightbulb className="w-3 h-3 text-yellow-200" />
+                    <span>Get Inspiration</span>
+                  </>
+                )}
+              </button>
+            </div>
             <div className="relative">
               <input
                 id="child-name-input"
@@ -196,6 +296,206 @@ export const BookForm: React.FC<BookFormProps> = ({
           </div>
         </div>
 
+        {/* AI Theme Inspiration Panel */}
+        {showInspirationPanel && (
+          <div
+            id="inspiration-themes-panel"
+            className="bg-linear-to-br from-amber-50/95 via-orange-50/80 to-yellow-50/90 border-2 border-amber-300/90 rounded-2xl p-4 sm:p-5 shadow-xs space-y-3.5 transition-all"
+          >
+            <div className="flex items-center justify-between gap-2 border-b border-amber-200/80 pb-2.5">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-amber-500 to-orange-500 text-white flex items-center justify-center shadow-xs">
+                  <Lightbulb className="w-4 h-4" />
+                </div>
+                <div>
+                  <h4 className="text-xs sm:text-sm font-bold text-gray-900 leading-tight flex items-center gap-1.5">
+                    <span>Trending Theme Inspiration</span>
+                    {childName.trim() ? (
+                      <span className="text-amber-800 font-semibold">for {childName.trim()}</span>
+                    ) : (
+                      <span className="text-gray-500 font-normal text-xs">(Enter child name above to personalize)</span>
+                    )}
+                  </h4>
+                  <p className="text-[11px] text-gray-600 mt-0.5">
+                    Select any trending theme to auto-fill the story adventure & matching book title
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  id="refresh-inspiration-btn"
+                  onClick={handleGetInspiration}
+                  disabled={isLoadingInspiration}
+                  className="flex items-center gap-1 text-[11px] font-bold text-amber-800 hover:text-amber-950 bg-white/90 hover:bg-white border border-amber-200 px-2.5 py-1 rounded-lg transition-colors cursor-pointer disabled:opacity-50 shadow-2xs"
+                  title="Generate 3 fresh creative themes"
+                >
+                  <RefreshCw className={`w-3 h-3 ${isLoadingInspiration ? 'animate-spin' : ''}`} />
+                  <span className="hidden sm:inline">New Ideas</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowInspirationPanel(false)}
+                  className="text-gray-400 hover:text-gray-700 p-1.5 rounded-lg hover:bg-white/80 transition-colors cursor-pointer"
+                  title="Close theme inspiration"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            {isLoadingInspiration ? (
+              <div className="py-8 flex flex-col items-center justify-center gap-3 text-center">
+                <Loader2 className="w-8 h-8 text-amber-600 animate-spin" />
+                <div>
+                  <p className="text-xs sm:text-sm font-bold text-gray-800">
+                    Brainstorming 3 creative trending themes{childName.trim() ? ` for ${childName.trim()}` : ''}...
+                  </p>
+                  <p className="text-[11px] text-gray-500 mt-0.5">
+                    Generating imaginative adventures, catchy titles, and fun scenes to color
+                  </p>
+                </div>
+              </div>
+            ) : inspirationError ? (
+              <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-xs text-red-700 flex items-center justify-between">
+                <span>{inspirationError}</span>
+                <button
+                  type="button"
+                  onClick={handleGetInspiration}
+                  className="font-bold underline text-red-800 ml-2 cursor-pointer"
+                >
+                  Retry
+                </button>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                {inspirationThemes.map((item, idx) => {
+                  const isSelected = theme.toLowerCase() === item.theme.toLowerCase();
+                  return (
+                    <div
+                      key={idx}
+                      id={`inspiration-card-${idx}`}
+                      onClick={() => handleApplyInspiration(item)}
+                      className={`p-3.5 rounded-xl border transition-all cursor-pointer flex flex-col justify-between group ${
+                        isSelected
+                          ? 'bg-amber-100/90 border-amber-500 ring-2 ring-amber-400/50 shadow-xs'
+                          : 'bg-white/95 hover:bg-white border-amber-200 hover:border-amber-400 hover:shadow-2xs'
+                      }`}
+                    >
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between gap-1">
+                          <span className="text-2xl select-none" role="img" aria-label="theme emoji">
+                            {item.emoji}
+                          </span>
+                          <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-md bg-amber-100/90 text-amber-900 border border-amber-200/80">
+                            {item.tag}
+                          </span>
+                        </div>
+                        <div>
+                          <h5 className="text-xs sm:text-sm font-bold text-gray-900 group-hover:text-amber-900 transition-colors">
+                            {item.theme}
+                          </h5>
+                          <p className="text-[11px] text-amber-900 font-semibold line-clamp-1 italic mt-0.5">
+                            &ldquo;{item.suggestedTitle}&rdquo;
+                          </p>
+                        </div>
+                        <p className="text-[11px] text-gray-600 leading-relaxed line-clamp-2">
+                          {item.description}
+                        </p>
+                        {item.sampleScenes && item.sampleScenes.length > 0 && (
+                          <div className="pt-1 space-y-0.5">
+                            <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider block">
+                              Scenes include:
+                            </span>
+                            <ul className="text-[10px] text-gray-500 space-y-0.5 pl-3 list-disc">
+                              {item.sampleScenes.slice(0, 2).map((scene, sIdx) => (
+                                <li key={sIdx} className="line-clamp-1">
+                                  {scene}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="pt-2.5 mt-2.5 border-t border-amber-100/80 flex items-center justify-between">
+                        <span className="text-[11px] font-bold text-amber-700 flex items-center gap-1 group-hover:translate-x-0.5 transition-transform">
+                          {isSelected ? (
+                            <>
+                              <Check className="w-3.5 h-3.5 text-emerald-600" />
+                              <span className="text-emerald-700">Theme Applied</span>
+                            </>
+                          ) : (
+                            <>
+                              <span>Use this theme</span>
+                              <ArrowRight className="w-3 h-3" />
+                            </>
+                          )}
+                        </span>
+                        {isSelected && (
+                          <span className="text-[10px] bg-emerald-100 text-emerald-800 px-1.5 py-0.5 rounded-md font-semibold">
+                            Active
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Preferred Coloring Book Title (Explicitly overrides default generated title) */}
+        <div className="space-y-1.5 pt-0.5" id="preferred-book-title-container">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+            <label
+              htmlFor="custom-book-title-input"
+              className="text-xs font-bold uppercase tracking-wider text-gray-700 flex items-center gap-1.5"
+            >
+              <BookOpen className="w-3.5 h-3.5 text-amber-600" />
+              Preferred Book Title (Optional)
+            </label>
+            <span className="text-[11px] text-amber-900 bg-amber-100/80 border border-amber-300 px-2 py-0.5 rounded-md font-semibold self-start sm:self-auto">
+              Overrides default generated title
+            </span>
+          </div>
+          <div className="relative">
+            <input
+              id="custom-book-title-input"
+              type="text"
+              value={customTitle}
+              onChange={(e) => setCustomTitle(e.target.value)}
+              placeholder={
+                childName.trim()
+                  ? `Leave blank to auto-generate "${childName}'s ${theme.trim() || 'Adventure'} Coloring Book", or type your preferred title...`
+                  : 'e.g., Maya\'s Magical Safari Adventure (or leave blank to auto-generate)...'
+              }
+              maxLength={70}
+              className="w-full px-3.5 py-2.5 rounded-xl border border-gray-300 focus:border-amber-500 focus:ring-3 focus:ring-amber-200/50 text-sm font-semibold text-gray-900 placeholder:text-gray-400 bg-amber-50/20 transition-all outline-hidden pr-16"
+            />
+            {customTitle && (
+              <button
+                type="button"
+                onClick={() => setCustomTitle('')}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-semibold text-gray-500 hover:text-gray-800 bg-gray-100 hover:bg-gray-200 px-2 py-0.5 rounded-md transition-colors cursor-pointer"
+                title="Clear preferred title"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+          <span className="text-[11px] text-gray-500 block">
+            {customTitle.trim() ? (
+              <span className="text-amber-800 font-medium">
+                ⭐ Custom title active: <strong>&ldquo;{customTitle.trim()}&rdquo;</strong> will be printed on the cover, pages, and exported PDF.
+              </span>
+            ) : (
+              'Leave blank to let AI generate a cheerful title, or type your own to customize the cover.'
+            )}
+          </span>
+        </div>
+
         {/* Primary Row 2: Theme Selection with Kid Magic Builder Tab */}
         <div className="space-y-3 pt-1">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-1">
@@ -204,34 +504,52 @@ export const BookForm: React.FC<BookFormProps> = ({
               Story Theme & Adventure
             </label>
 
-            {/* Mode Switch Tabs */}
-            <div className="inline-flex p-1 bg-amber-100/70 border border-amber-300/80 rounded-xl text-xs font-bold">
+            <div className="flex items-center gap-2">
               <button
                 type="button"
-                onClick={() => setThemeMode('kid-magic')}
-                className={`px-3 py-1.5 rounded-lg transition-all flex items-center gap-1.5 cursor-pointer ${
-                  themeMode === 'kid-magic'
-                    ? 'bg-amber-600 text-white shadow-xs'
-                    : 'text-amber-900 hover:text-amber-950'
-                }`}
+                id="theme-section-inspiration-btn"
+                onClick={handleGetInspiration}
+                disabled={isLoadingInspiration}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-100/90 hover:bg-amber-200 text-amber-950 border border-amber-300 text-xs font-bold transition-all cursor-pointer disabled:opacity-60 shadow-2xs active:scale-95"
+                title="AI generates 3 creative, trending themes"
               >
-                <span>✨ Kid Magic Builder</span>
-                <span className="text-[10px] bg-white/20 text-white px-1.5 py-0.2 rounded-full hidden sm:inline">
-                  Interactive
-                </span>
+                {isLoadingInspiration ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-700" />
+                ) : (
+                  <Lightbulb className="w-3.5 h-3.5 text-amber-600" />
+                )}
+                <span>Get Inspiration</span>
               </button>
-              <button
-                type="button"
-                onClick={() => setThemeMode('custom')}
-                className={`px-3 py-1.5 rounded-lg transition-all flex items-center gap-1.5 cursor-pointer ${
-                  themeMode === 'custom'
-                    ? 'bg-amber-600 text-white shadow-xs'
-                    : 'text-amber-900 hover:text-amber-950'
-                }`}
-              >
-                <Compass className="w-3.5 h-3.5" />
-                <span>Text / Presets</span>
-              </button>
+
+              {/* Mode Switch Tabs */}
+              <div className="inline-flex p-1 bg-amber-100/70 border border-amber-300/80 rounded-xl text-xs font-bold">
+                <button
+                  type="button"
+                  onClick={() => setThemeMode('kid-magic')}
+                  className={`px-3 py-1.5 rounded-lg transition-all flex items-center gap-1.5 cursor-pointer ${
+                    themeMode === 'kid-magic'
+                      ? 'bg-amber-600 text-white shadow-xs'
+                      : 'text-amber-900 hover:text-amber-950'
+                  }`}
+                >
+                  <span>✨ Kid Magic Builder</span>
+                  <span className="text-[10px] bg-white/20 text-white px-1.5 py-0.2 rounded-full hidden sm:inline">
+                    Interactive
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setThemeMode('custom')}
+                  className={`px-3 py-1.5 rounded-lg transition-all flex items-center gap-1.5 cursor-pointer ${
+                    themeMode === 'custom'
+                      ? 'bg-amber-600 text-white shadow-xs'
+                      : 'text-amber-900 hover:text-amber-950'
+                  }`}
+                >
+                  <Compass className="w-3.5 h-3.5" />
+                  <span>Text / Presets</span>
+                </button>
+              </div>
             </div>
           </div>
 

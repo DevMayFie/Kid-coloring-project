@@ -1,10 +1,12 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Header } from './components/Header';
 import { BookForm } from './components/BookForm';
 import { ColoringBookView } from './components/ColoringBookView';
 import { ChatDrawer } from './components/ChatDrawer';
 import { PdfExportModal } from './components/PdfExportModal';
 import { PageEditorModal } from './components/PageEditorModal';
+import { Tooltip } from './components/Tooltip';
+import { ProgressRing } from './components/ProgressRing';
 import { ColoringBook, ColoringPage, ImageResolution, AspectRatio, ColoringDifficulty, FavoriteBook } from './types';
 import { DEFAULT_COLORING_BOOK, createSampleLineArtSvg, createSampleStickersSvg } from './utils/sampleData';
 import { generateColoringBookPdf } from './utils/pdfGenerator';
@@ -24,11 +26,33 @@ export default function App() {
   const [editingPage, setEditingPage] = useState<ColoringPage | null>(null);
   const [isRegeneratingSingle, setIsRegeneratingSingle] = useState(false);
   const [isPreparingBottomPdf, setIsPreparingBottomPdf] = useState(false);
+  const [pdfPrepProgress, setPdfPrepProgress] = useState(0);
+  const [isBookGenerationFinished, setIsBookGenerationFinished] = useState(true);
+  const [isPdfBtnTooltipVisible, setIsPdfBtnTooltipVisible] = useState(false);
+
+  // Global shortcut: Listen for Ctrl+S or Cmd+S to trigger the export PDF button click handler
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S')) {
+        e.preventDefault(); // Prevent browser's native Save Webpage dialog
+        const exportBtn = document.getElementById('bottom-download-pdf-btn');
+        if (exportBtn) {
+          exportBtn.click();
+        }
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, []);
 
   // Generate coloring book with Gemini
   const handleGenerateBook = async (options: {
     theme: string;
     childName: string;
+    customTitle?: string;
     pageCount?: number;
     difficulty?: ColoringDifficulty;
     resolution: ImageResolution;
@@ -37,6 +61,8 @@ export default function App() {
   }) => {
     const targetPageCount = Math.max(1, Math.min(12, options.pageCount || 5));
     const targetDifficulty: ColoringDifficulty = options.difficulty || 'standard';
+    const explicitTitle = options.customTitle?.trim() || '';
+    setIsBookGenerationFinished(false);
     setIsGeneratingBook(true);
     setGenerationStep(1);
     const difficultyLabel =
@@ -53,6 +79,7 @@ export default function App() {
           body: JSON.stringify({
             theme: options.theme,
             childName: options.childName,
+            customTitle: explicitTitle || undefined,
             pageCount: targetPageCount,
             difficulty: targetDifficulty,
             userNotes: options.userNotes,
@@ -129,12 +156,14 @@ export default function App() {
             : "Children's coloring book cover, bold thick black outlines, pure white background";
 
         planData = {
-          bookTitle: `${options.childName}'s ${options.theme} Adventure`,
+          bookTitle: explicitTitle || `${options.childName}'s ${options.theme} Adventure`,
           subtitle: `A ${targetPageCount}-Page Coloring Journey filled with Fun!`,
           dedication: `Created with love especially for ${options.childName} • Happy Coloring!`,
           coverPrompt: `${coverPromptPrefix}, cute ${options.theme} character smiling with decorative stars`,
           pages: fallbackPages,
         };
+      } else if (explicitTitle) {
+        planData.bookTitle = explicitTitle;
       }
 
       // Initialize the new book object with pending status for all requested pages
@@ -154,7 +183,7 @@ export default function App() {
         theme: options.theme,
         childName: options.childName,
         difficulty: targetDifficulty,
-        title: planData.bookTitle || `${options.childName}'s ${options.theme} Coloring Book`,
+        title: explicitTitle || planData.bookTitle || `${options.childName}'s ${options.theme} Coloring Book`,
         subtitle: planData.subtitle || `A ${targetPageCount}-Page Adventure to Color`,
         dedication: planData.dedication || `Created especially for ${options.childName}`,
         resolution: options.resolution,
@@ -253,6 +282,7 @@ export default function App() {
       }
 
       // Success celebration!
+      setIsBookGenerationFinished(true);
       try {
         confetti({
           particleCount: 100,
@@ -503,6 +533,7 @@ export default function App() {
       <Header
         childName={book.childName}
         theme={book.theme}
+        bookTitle={book.title}
         onOpenChat={() => setIsChatOpen(true)}
         onDownloadPdf={() => setIsPdfModalOpen(true)}
         onDirectPrint={() => setIsPdfModalOpen(true)}
@@ -544,7 +575,7 @@ export default function App() {
           onGenerateBook={handleGenerateBook}
         />
 
-        {/* Coloring Book View: Custom Cover + Distinct Coloring Pages */}
+        {/* Coloring Book View: Custom Cover + Distinct Coloring Pages + Filmstrip Navigation */}
         <ColoringBookView
           book={book}
           onRegeneratePage={handleRegeneratePage}
@@ -554,53 +585,30 @@ export default function App() {
           onPrintSinglePage={handlePrintSinglePage}
           onPrintStickerSheet={handlePrintStickerSheet}
           onLoadFavorite={handleLoadFavorite}
+          onDownloadPdf={() => {
+            setIsPdfBtnTooltipVisible(false);
+            if (isPreparingBottomPdf) return;
+            setIsPreparingBottomPdf(true);
+            setPdfPrepProgress(15);
+            playChimeSound('sparkle');
+
+            // Dynamically step through progress ring while preparing PDF
+            setTimeout(() => setPdfPrepProgress(45), 200);
+            setTimeout(() => setPdfPrepProgress(78), 450);
+            setTimeout(() => setPdfPrepProgress(100), 700);
+            setTimeout(() => {
+              setIsPreparingBottomPdf(false);
+              setPdfPrepProgress(0);
+              setIsPdfModalOpen(true);
+            }, 920);
+          }}
+          isPreparingPdf={isPreparingBottomPdf}
+          pdfProgress={pdfPrepProgress}
+          isPdfBtnTooltipVisible={isPdfBtnTooltipVisible}
+          setIsPdfBtnTooltipVisible={setIsPdfBtnTooltipVisible}
+          isBookGenerationFinished={isBookGenerationFinished}
+          isGeneratingBook={isGeneratingBook}
         />
-
-        {/* Bottom Floating Export Bar for quick access */}
-        <div className="sticky bottom-6 z-20 max-w-xl mx-auto bg-gray-900/95 backdrop-blur-md text-white px-6 py-3.5 rounded-2xl shadow-2xl border border-gray-700 flex items-center justify-between gap-4">
-          <div className="flex items-center gap-2.5">
-            <BookOpen className="w-5 h-5 text-amber-400" />
-            <div>
-              <p className="text-xs font-bold text-white leading-tight">
-                {book.childName}'s {book.theme} Book
-              </p>
-              <p className="text-[11px] text-gray-400">
-                {book.pages.length} Pages + Custom Cover Ready
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <button
-              id="bottom-download-pdf-btn"
-              disabled={isPreparingBottomPdf}
-              onClick={() => {
-                if (isPreparingBottomPdf) return;
-                setIsPreparingBottomPdf(true);
-                playChimeSound('sparkle');
-                setTimeout(() => {
-                  setIsPreparingBottomPdf(false);
-                  setIsPdfModalOpen(true);
-                }, 750);
-              }}
-              className="group relative overflow-hidden px-4 py-2 rounded-xl bg-linear-to-r from-amber-500 via-orange-500 to-amber-600 hover:from-amber-600 hover:to-orange-600 text-white text-xs font-bold shadow-md transition-all duration-200 hover:scale-105 active:scale-95 hover:shadow-[0_0_24px_rgba(245,158,11,0.7)] hover:ring-2 hover:ring-amber-300 ring-offset-2 ring-offset-gray-900 cursor-pointer disabled:opacity-90 flex items-center gap-1.5 select-none"
-              title="Download complete printable coloring book as PDF"
-            >
-              {/* Animated overlay on click */}
-              {isPreparingBottomPdf && (
-                <span className="absolute inset-0 bg-white/30 backdrop-blur-2xs animate-pulse flex items-center justify-center z-10" />
-              )}
-              {isPreparingBottomPdf ? (
-                <RefreshCw className="w-4 h-4 animate-spin shrink-0 text-white relative z-20" />
-              ) : (
-                <Download className="w-4 h-4 shrink-0 transition-transform group-hover:-translate-y-0.5 relative z-20" />
-              )}
-              <span className="relative z-20">
-                {isPreparingBottomPdf ? 'Preparing PDF Book...' : 'Download PDF Book'}
-              </span>
-            </button>
-          </div>
-        </div>
       </main>
 
       {/* Multi-turn Chat Assistant Drawer */}
