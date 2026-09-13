@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
 import {
   ChevronLeft,
   ChevronRight,
@@ -335,47 +336,67 @@ export const FilmStripNav: React.FC<FilmStripNavProps> = ({
               className="w-full overflow-x-auto scrollbar-none flex items-center gap-2 sm:gap-2.5 py-1 px-1 scroll-smooth"
               style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
             >
-              {items.map((item) => {
-                const isSelected =
-                  viewMode === 'flip'
-                    ? item.slideIndex === activePageIndex
-                    : item.domId === activeItemDomId;
+              <AnimatePresence mode="popLayout">
+                {items.map((item, itemIdx) => {
+                  const isSelected =
+                    viewMode === 'flip'
+                      ? item.slideIndex === activePageIndex
+                      : item.domId === activeItemDomId;
 
-                return (
-                  <button
-                    key={item.id}
-                    id={`thumb-${item.id}`}
-                    type="button"
-                    onClick={() => handleItemClick(item)}
-                    className={`shrink-0 w-16 sm:w-20 h-22 sm:h-26 rounded-xl overflow-hidden border-2 transition-all duration-200 flex flex-col justify-between p-1 cursor-pointer relative group/thumb ${
-                      isSelected
-                        ? 'border-amber-500 bg-amber-50/90 ring-3 ring-amber-400 shadow-md scale-105'
-                        : 'border-amber-200/90 bg-white hover:border-amber-400 hover:bg-amber-50/40 opacity-90 hover:opacity-100'
-                    }`}
-                    title={item.title}
-                  >
-                    {/* Thumbnail Image Box */}
-                    <div className="w-full h-14 sm:h-17 bg-white rounded-lg border border-gray-100 flex items-center justify-center overflow-hidden relative">
-                      {item.imageUrl ? (
-                        <img
-                          src={item.imageUrl}
-                          alt={item.title}
-                          referrerPolicy="no-referrer"
-                          className="w-full h-full object-contain filter contrast-125 p-0.5"
-                          loading="lazy"
-                        />
-                      ) : (
-                        <div className="w-full h-full flex flex-col items-center justify-center p-1 bg-gray-50 text-gray-400">
-                          {item.status === 'generating' ? (
-                            <RefreshCw className="w-3.5 h-3.5 text-amber-500 animate-spin" />
+                  return (
+                    <motion.button
+                      key={item.id}
+                      id={`thumb-${item.id}`}
+                      type="button"
+                      layout
+                      initial={{ opacity: 0, scale: 0.85, x: 12 }}
+                      animate={{ opacity: 1, scale: 1, x: 0 }}
+                      exit={{ opacity: 0, scale: 0.85, x: -12 }}
+                      transition={{ duration: 0.28, delay: Math.min(itemIdx * 0.03, 0.25) }}
+                      onClick={() => handleItemClick(item)}
+                      className={`shrink-0 w-16 sm:w-20 h-22 sm:h-26 rounded-xl overflow-hidden border-2 transition-all duration-200 flex flex-col justify-between p-1 cursor-pointer relative group/thumb ${
+                        isSelected
+                          ? 'border-amber-500 bg-amber-50/90 ring-3 ring-amber-400 shadow-md scale-105'
+                          : 'border-amber-200/90 bg-white hover:border-amber-400 hover:bg-amber-50/40 opacity-90 hover:opacity-100'
+                      }`}
+                      title={item.title}
+                    >
+                      {/* Thumbnail Image Box */}
+                      <div className="w-full h-14 sm:h-17 bg-white rounded-lg border border-gray-100 flex items-center justify-center overflow-hidden relative">
+                        <AnimatePresence mode="wait">
+                          {item.imageUrl ? (
+                            <motion.img
+                              key={`thumb-img-${item.imageUrl}`}
+                              src={item.imageUrl}
+                              alt={item.title}
+                              referrerPolicy="no-referrer"
+                              initial={{ opacity: 0, scale: 0.95 }}
+                              animate={{ opacity: 1, scale: 1 }}
+                              exit={{ opacity: 0 }}
+                              transition={{ duration: 0.25 }}
+                              className="w-full h-full object-contain filter contrast-125 p-0.5"
+                              loading="lazy"
+                            />
                           ) : (
-                            <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                            <motion.div
+                              key="thumb-empty"
+                              initial={{ opacity: 0 }}
+                              animate={{ opacity: 1 }}
+                              exit={{ opacity: 0 }}
+                              transition={{ duration: 0.2 }}
+                              className="w-full h-full flex flex-col items-center justify-center p-1 bg-gray-50 text-gray-400"
+                            >
+                              {item.status === 'generating' ? (
+                                <RefreshCw className="w-3.5 h-3.5 text-amber-500 animate-spin" />
+                              ) : (
+                                <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                              )}
+                              <span className="text-[8px] font-bold text-gray-500 mt-0.5">
+                                {item.status === 'generating' ? 'Drawing' : 'Empty'}
+                              </span>
+                            </motion.div>
                           )}
-                          <span className="text-[8px] font-bold text-gray-500 mt-0.5">
-                            {item.status === 'generating' ? 'Drawing' : 'Empty'}
-                          </span>
-                        </div>
-                      )}
+                        </AnimatePresence>
 
                       {/* Small Type Icon (Cover / Stickers) */}
                       {item.type === 'stickers' && (
@@ -408,10 +429,11 @@ export const FilmStripNav: React.FC<FilmStripNavProps> = ({
                     {isSelected && (
                       <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-amber-500 rounded-full ring-2 ring-white shadow-xs" />
                     )}
-                  </button>
+                  </motion.button>
                 );
               })}
-            </div>
+            </AnimatePresence>
+          </div>
 
             {/* Scroll Right Button */}
             <button

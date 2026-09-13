@@ -4,6 +4,16 @@ export type AspectRatio = '3:4' | '1:1' | '4:3';
 
 export type ColoringDifficulty = 'toddler' | 'standard' | 'intricate';
 
+export type ActivityMode = 'standard' | 'color-by-numbers' | 'dot-to-dot';
+
+export type BookLanguage = 'en' | 'es' | 'fr' | 'de' | 'it' | 'pt' | 'ja';
+
+export interface NumberLegendItem {
+  number: number;
+  colorName: string;
+  hex: string;
+}
+
 export type ChatModel =
   | 'gemini-3.1-pro-preview'
   | 'gemini-3.5-flash'
@@ -14,12 +24,16 @@ export interface ColoringPage {
   pageNumber: number;
   title: string;
   storyCaption: string;
+  secondaryCaption?: string;
+  secondaryLanguage?: BookLanguage;
   funFactOrTip?: string;
   prompt: string;
   imageUrl?: string;
   status: 'pending' | 'generating' | 'completed' | 'error';
   errorMessage?: string;
   resolution?: ImageResolution;
+  activityMode?: ActivityMode;
+  numberLegend?: NumberLegendItem[];
 }
 
 export interface StickerSheet {
@@ -38,6 +52,10 @@ export interface FavoriteBook {
   title: string;
   subtitle: string;
   dedication: string;
+  dedicationAuthor?: string;
+  activityMode?: ActivityMode;
+  language?: BookLanguage;
+  secondaryLanguage?: BookLanguage;
   difficulty?: ColoringDifficulty;
   resolution: ImageResolution;
   aspectRatio: AspectRatio;
@@ -52,9 +70,13 @@ export interface ColoringBook {
   theme: string;
   childName: string;
   difficulty?: ColoringDifficulty;
+  activityMode?: ActivityMode;
+  language?: BookLanguage;
+  secondaryLanguage?: BookLanguage;
   title: string;
   subtitle: string;
   dedication: string;
+  dedicationAuthor?: string;
   resolution: ImageResolution;
   aspectRatio: AspectRatio;
   coverImageUrl?: string;

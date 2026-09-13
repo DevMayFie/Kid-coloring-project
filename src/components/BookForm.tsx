@@ -19,8 +19,12 @@ import {
   RefreshCw,
   X,
   ArrowRight,
+  Hash,
+  PenTool,
+  Globe,
+  Heart,
 } from 'lucide-react';
-import { ImageResolution, AspectRatio, ColoringDifficulty } from '../types';
+import { ImageResolution, AspectRatio, ColoringDifficulty, ActivityMode, BookLanguage } from '../types';
 import { POPULAR_THEMES } from '../utils/sampleData';
 import { KidStoryBuilder } from './KidStoryBuilder';
 import { playChimeSound } from '../utils/kidAudio';
@@ -38,8 +42,10 @@ interface BookFormProps {
   initialTheme: string;
   initialChildName: string;
   initialCustomTitle?: string;
+  initialDedicationAuthor?: string;
   initialPageCount?: number;
   initialDifficulty?: ColoringDifficulty;
+  initialActivityMode?: ActivityMode;
   initialResolution: ImageResolution;
   initialAspectRatio: AspectRatio;
   isGenerating: boolean;
@@ -47,8 +53,11 @@ interface BookFormProps {
     theme: string;
     childName: string;
     customTitle?: string;
+    dedicationAuthor?: string;
     pageCount: number;
     difficulty: ColoringDifficulty;
+    activityMode: ActivityMode;
+    secondaryLanguage?: BookLanguage;
     resolution: ImageResolution;
     aspectRatio: AspectRatio;
     userNotes?: string;
@@ -59,8 +68,10 @@ export const BookForm: React.FC<BookFormProps> = ({
   initialTheme,
   initialChildName,
   initialCustomTitle = '',
+  initialDedicationAuthor = '',
   initialPageCount = 5,
   initialDifficulty = 'standard',
+  initialActivityMode = 'standard',
   initialResolution,
   initialAspectRatio,
   isGenerating,
@@ -69,8 +80,11 @@ export const BookForm: React.FC<BookFormProps> = ({
   const [theme, setTheme] = useState(initialTheme);
   const [childName, setChildName] = useState(initialChildName);
   const [customTitle, setCustomTitle] = useState(initialCustomTitle);
+  const [dedicationAuthor, setDedicationAuthor] = useState(initialDedicationAuthor);
   const [pageCount, setPageCount] = useState<number>(initialPageCount);
   const [difficulty, setDifficulty] = useState<ColoringDifficulty>(initialDifficulty);
+  const [activityMode, setActivityMode] = useState<ActivityMode>(initialActivityMode);
+  const [secondaryLanguage, setSecondaryLanguage] = useState<BookLanguage | ''>('');
   const [resolution, setResolution] = useState<ImageResolution>(initialResolution);
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>(initialAspectRatio);
   const [userNotes, setUserNotes] = useState('');
@@ -150,8 +164,11 @@ export const BookForm: React.FC<BookFormProps> = ({
       theme: theme.trim(),
       childName: childName.trim(),
       customTitle: customTitle.trim() || undefined,
+      dedicationAuthor: dedicationAuthor.trim() || undefined,
       pageCount: validatedPageCount,
       difficulty,
+      activityMode,
+      secondaryLanguage: secondaryLanguage || undefined,
       resolution,
       aspectRatio,
       userNotes: userNotes.trim(),
@@ -674,6 +691,79 @@ export const BookForm: React.FC<BookFormProps> = ({
           )}
         </div>
 
+        {/* ACTIVITY PUZZLE MODE (Standard Storybook, Color by Numbers, Dot-to-Dot Puzzle) */}
+        <div className="pt-2 border-t border-gray-100" id="activity-mode-section">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 mb-2">
+            <label className="text-xs font-bold uppercase tracking-wider text-gray-700 flex items-center gap-1.5">
+              <Sparkles className="w-3.5 h-3.5 text-amber-600" />
+              Activity & Puzzle Style
+            </label>
+            <span className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200/80 px-2 py-0.5 rounded-md font-semibold self-start sm:self-auto">
+              Choose play style for every page
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3" id="activity-mode-selector">
+            {[
+              {
+                id: 'standard' as ActivityMode,
+                emoji: '🎨',
+                name: 'Storybook Art',
+                tagline: 'Classic Coloring',
+                desc: 'Open-ended story scenes with bold outlines. Kids freely choose all their colors.',
+              },
+              {
+                id: 'color-by-numbers' as ActivityMode,
+                emoji: '🔢',
+                name: 'Color by Numbers',
+                tagline: 'Numbered Compartments',
+                desc: 'Numbered shapes with matching color legend key [1–6]. Great for number recognition!',
+              },
+              {
+                id: 'dot-to-dot' as ActivityMode,
+                emoji: '✏️',
+                name: 'Dot-to-Dot Puzzle',
+                tagline: 'Connect the Dots',
+                desc: 'Numbered dots (1–25) outlining the main character. Connect the lines, then color in!',
+              },
+            ].map((mode) => {
+              const isSelected = activityMode === mode.id;
+              return (
+                <button
+                  key={mode.id}
+                  type="button"
+                  id={`activity-mode-btn-${mode.id}`}
+                  onClick={() => {
+                    setActivityMode(mode.id);
+                    playChimeSound('pop');
+                  }}
+                  className={`p-3.5 rounded-xl border text-left transition-all relative flex flex-col justify-between cursor-pointer ${
+                    isSelected
+                      ? 'border-amber-600 bg-amber-50/90 ring-2 ring-amber-500/20 shadow-xs'
+                      : 'border-gray-200 hover:border-amber-300 bg-white hover:bg-gray-50/50'
+                  }`}
+                >
+                  <div>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-base select-none">{mode.emoji}</span>
+                        <span className="font-bold text-sm text-gray-900">{mode.name}</span>
+                      </div>
+                      {isSelected && (
+                        <span className="w-4 h-4 rounded-full bg-amber-600 text-white flex items-center justify-center">
+                          <Check className="w-2.5 h-2.5" />
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-xs font-semibold text-amber-900 mb-1">{mode.tagline}</div>
+                    <p className="text-[11px] text-gray-600 leading-snug">{mode.desc}</p>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
         {/* DIFFICULTY SELECTOR (Ranges from 'simple thick lines for toddlers' to 'intricate patterns for older children') */}
         <div className="pt-2 border-t border-gray-100" id="difficulty-selector-section">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 mb-2">
@@ -901,6 +991,50 @@ export const BookForm: React.FC<BookFormProps> = ({
                     </button>
                   ))}
                 </div>
+              </div>
+
+              {/* Dedication Author */}
+              <div>
+                <label htmlFor="dedication-author-input" className="block text-xs font-bold uppercase tracking-wider text-gray-700 mb-1.5 flex items-center gap-1.5">
+                  <Heart className="w-3.5 h-3.5 text-rose-500" />
+                  <span>Book Dedicated By (Optional)</span>
+                </label>
+                <input
+                  id="dedication-author-input"
+                  type="text"
+                  value={dedicationAuthor}
+                  onChange={(e) => setDedicationAuthor(e.target.value)}
+                  placeholder="e.g., Mom & Dad, Grandma & Grandpa, Uncle David, Santa"
+                  className="w-full px-3 py-2 rounded-lg border border-gray-300 text-xs text-gray-900 focus:border-amber-500 focus:outline-hidden"
+                />
+                <p className="text-[10px] text-gray-500 mt-1">
+                  Printed in the dedication box and opening certificate inside the PDF!
+                </p>
+              </div>
+
+              {/* Bilingual Dual-Language Captions */}
+              <div>
+                <label htmlFor="secondary-language-select" className="block text-xs font-bold uppercase tracking-wider text-gray-700 mb-1.5 flex items-center gap-1.5">
+                  <Globe className="w-3.5 h-3.5 text-blue-500" />
+                  <span>Bilingual Story Captions (Optional)</span>
+                </label>
+                <select
+                  id="secondary-language-select"
+                  value={secondaryLanguage}
+                  onChange={(e) => setSecondaryLanguage(e.target.value as any)}
+                  className="w-full px-3 py-2 rounded-lg border border-gray-300 text-xs text-gray-900 bg-white focus:border-amber-500 focus:outline-hidden"
+                >
+                  <option value="">English Only (Default)</option>
+                  <option value="es">🇪🇸 Spanish (Español)</option>
+                  <option value="fr">🇫🇷 French (Français)</option>
+                  <option value="de">🇩🇪 German (Deutsch)</option>
+                  <option value="it">🇮🇹 Italian (Italiano)</option>
+                  <option value="pt">🇧🇷 Portuguese (Português)</option>
+                  <option value="ja">🇯🇵 Japanese (日本語)</option>
+                </select>
+                <p className="text-[10px] text-gray-500 mt-1">
+                  Generates dual-language rhyming captions with native speech narration in the coloring studio!
+                </p>
               </div>
 
               {/* Extra Story Notes */}

@@ -2,15 +2,36 @@ import React, { useState, useEffect } from 'react';
 import { Header } from './components/Header';
 import { BookForm } from './components/BookForm';
 import { ColoringBookView } from './components/ColoringBookView';
+import { HistorySection } from './components/HistorySection';
+import { RestoreSessionBanner } from './components/RestoreSessionBanner';
 import { ChatDrawer } from './components/ChatDrawer';
 import { PdfExportModal } from './components/PdfExportModal';
 import { PageEditorModal } from './components/PageEditorModal';
 import { Tooltip } from './components/Tooltip';
 import { ProgressRing } from './components/ProgressRing';
-import { ColoringBook, ColoringPage, ImageResolution, AspectRatio, ColoringDifficulty, FavoriteBook } from './types';
+import {
+  ColoringBook,
+  ColoringPage,
+  ImageResolution,
+  AspectRatio,
+  ColoringDifficulty,
+  FavoriteBook,
+  ActivityMode,
+  BookLanguage,
+  NumberLegendItem,
+} from './types';
 import { DEFAULT_COLORING_BOOK, createSampleLineArtSvg, createSampleStickersSvg } from './utils/sampleData';
 import { generateColoringBookPdf } from './utils/pdfGenerator';
 import { playChimeSound } from './utils/kidAudio';
+import {
+  saveBookToLocalStorage,
+  getAutosavedSession,
+  getSessionHistory,
+  addBookToSessionHistory,
+  removeBookFromSessionHistory,
+  clearSessionHistory,
+  AutosavedSession,
+} from './utils/historyAndAutosave';
 import { Sparkles, Printer, Download, BookOpen, AlertCircle, RefreshCw } from 'lucide-react';
 import confetti from 'canvas-confetti';
 
@@ -19,6 +40,17 @@ export default function App() {
   const [isGeneratingBook, setIsGeneratingBook] = useState(false);
   const [generationProgressText, setGenerationProgressText] = useState('');
   const [generationStep, setGenerationStep] = useState(0);
+
+  // History & Autosave state
+  const [historyBooks, setHistoryBooks] = useState<ColoringBook[]>(() => {
+    const existing = getSessionHistory();
+    if (existing.length === 0) {
+      return addBookToSessionHistory(DEFAULT_COLORING_BOOK);
+    }
+    return existing;
+  });
+  const [autosavedSession, setAutosavedSession] = useState<AutosavedSession | null>(null);
+  const [showRestoreBanner, setShowRestoreBanner] = useState(false);
 
   // Modals & Drawers
   const [isChatOpen, setIsChatOpen] = useState(false);
@@ -29,6 +61,28 @@ export default function App() {
   const [pdfPrepProgress, setPdfPrepProgress] = useState(0);
   const [isBookGenerationFinished, setIsBookGenerationFinished] = useState(true);
   const [isPdfBtnTooltipVisible, setIsPdfBtnTooltipVisible] = useState(false);
+
+  // On initial page load: check if auto-saved session exists in localStorage
+  useEffect(() => {
+    const saved = getAutosavedSession();
+    if (saved && saved.book && Array.isArray(saved.book.pages) && saved.book.pages.length > 0) {
+      setAutosavedSession(saved);
+      // Show restore banner if saved session is present
+      setShowRestoreBanner(true);
+    }
+  }, []);
+
+  // Automatically save current book state to browser localStorage whenever a change is made
+  useEffect(() => {
+    if (book && book.id) {
+      saveBookToLocalStorage(book);
+      // Keep autosaved session in sync
+      setAutosavedSession({
+        book,
+        savedAt: Date.now(),
+      });
+    }
+  }, [book]);
 
   // Global shortcut: Listen for Ctrl+S or Cmd+S to trigger the export PDF button click handler
   useEffect(() => {
@@ -53,21 +107,29 @@ export default function App() {
     theme: string;
     childName: string;
     customTitle?: string;
+    dedicationAuthor?: string;
     pageCount?: number;
     difficulty?: ColoringDifficulty;
+    activityMode?: ActivityMode;
+    secondaryLanguage?: BookLanguage;
     resolution: ImageResolution;
     aspectRatio: AspectRatio;
     userNotes?: string;
   }) => {
     const targetPageCount = Math.max(1, Math.min(12, options.pageCount || 5));
     const targetDifficulty: ColoringDifficulty = options.difficulty || 'standard';
+    const targetActivityMode: ActivityMode = options.activityMode || 'standard';
+    const targetSecondaryLang: BookLanguage | undefined = options.secondaryLanguage;
     const explicitTitle = options.customTitle?.trim() || '';
+    const cleanAuthor = options.dedicationAuthor?.trim() || '';
     setIsBookGenerationFinished(false);
     setIsGeneratingBook(true);
     setGenerationStep(1);
     const difficultyLabel =
       targetDifficulty === 'toddler' ? 'toddler lines' : targetDifficulty === 'intricate' ? 'intricate patterns' : 'standard outlines';
-    setGenerationProgressText(`Planning ${targetPageCount} story scenes (${difficultyLabel}) for ${options.childName}...`);
+    const modeLabel =
+      targetActivityMode === 'color-by-numbers' ? 'Color by Numbers' : targetActivityMode === 'dot-to-dot' ? 'Dot-to-Dot Puzzle' : 'Storybook';
+    setGenerationProgressText(`Planning ${targetPageCount} ${modeLabel} scenes (${difficultyLabel}) for ${options.childName}...`);
 
     try {
       // Step 1: Call /api/plan-book to generate cohesive story adventure with coloring tips
@@ -80,8 +142,11 @@ export default function App() {
             theme: options.theme,
             childName: options.childName,
             customTitle: explicitTitle || undefined,
+            dedicationAuthor: cleanAuthor || undefined,
             pageCount: targetPageCount,
             difficulty: targetDifficulty,
+            activityMode: targetActivityMode,
+            secondaryLanguage: targetSecondaryLang || undefined,
             userNotes: options.userNotes,
           }),
         });
@@ -93,6 +158,14 @@ export default function App() {
       } catch (planErr) {
         console.warn('API plan call failed, falling back to local story outline:', planErr);
       }
+
+      const defaultLegend: NumberLegendItem[] = [
+        { number: 1, colorName: 'Sky Blue', hex: '#38bdf8' },
+        { number: 2, colorName: 'Sun Yellow', hex: '#facc15' },
+        { number: 3, colorName: 'Grass Green', hex: '#4ade80' },
+        { number: 4, colorName: 'Ruby Red', hex: '#f87171' },
+        { number: 5, colorName: 'Grape Purple', hex: '#c084fc' },
+      ];
 
       // If plan API had an issue, synthesize structured scenes with fun facts and tips
       if (!planData || !planData.pages || planData.pages.length === 0) {
@@ -107,30 +180,35 @@ export default function App() {
           {
             title: `The Journey Begins with ${options.theme}`,
             caption: `${options.childName}'s great adventure begins today with happy smiles!`,
+            secCaption: `¡La gran aventura de ${options.childName} comienza hoy con sonrisas felices!`,
             tip: `Coloring Tip: Give the character a bright sunshine yellow smile!`,
             prompt: `${promptStylePrefix}, cute friendly ${options.theme} waving hello`,
           },
           {
             title: `Exploring the ${options.theme} World`,
             caption: `Look at all the magical discoveries waiting to be explored!`,
+            secCaption: `¡Mira todos los descubrimientos mágicos esperando ser explorados!`,
             tip: `Fun Fact: Exploring new places helps your imagination grow as tall as a giant!`,
             prompt: `${promptStylePrefix}, ${options.theme} exploring with cute gadgets`,
           },
           {
             title: `A Playful ${options.theme} Friend`,
             caption: `Sharing snacks and playing games with good friends!`,
+            secCaption: `¡Compartiendo meriendas y jugando juegos con buenos amigos!`,
             tip: `Coloring Tip: Try coloring the background with cool sky blues and grass greens!`,
             prompt: `${promptStylePrefix}, ${options.theme} having a picnic or playing games with friends`,
           },
           {
             title: `The Big Exciting Discovery`,
             caption: `Look up high! A wonderful surprise shines bright in the sky!`,
+            secCaption: `¡Mira hacia arriba! ¡Una maravillosa sorpresa brilla en el cielo!`,
             tip: `Fun Fact: Stars in outer space can twinkle in shades of red, white, and blue!`,
             prompt: `${promptStylePrefix}, ${options.theme} discovering a glowing treasure or starry prize`,
           },
           {
             title: `Celebration & Sweet Dreams`,
             caption: `A happy celebration for ${options.childName}'s brave adventure!`,
+            secCaption: `¡Una alegre celebración para la valiente aventura de ${options.childName}!`,
             tip: `Coloring Tip: Use every color in your crayon box to make the confetti burst!`,
             prompt: `${promptStylePrefix}, ${options.theme} celebrating with confetti, balloons, and smiling stars`,
           },
@@ -143,8 +221,10 @@ export default function App() {
             pageNumber: pIdx + 1,
             sceneTitle: scene.title,
             storyCaption: scene.caption,
+            secondaryCaption: targetSecondaryLang ? scene.secCaption : undefined,
             funFactOrTip: scene.tip,
             imagePrompt: scene.prompt,
+            numberLegend: targetActivityMode === 'color-by-numbers' ? defaultLegend : undefined,
           });
         }
 
@@ -158,7 +238,9 @@ export default function App() {
         planData = {
           bookTitle: explicitTitle || `${options.childName}'s ${options.theme} Adventure`,
           subtitle: `A ${targetPageCount}-Page Coloring Journey filled with Fun!`,
-          dedication: `Created with love especially for ${options.childName} • Happy Coloring!`,
+          dedication: cleanAuthor
+            ? `Created with love especially for ${options.childName} from ${cleanAuthor} • Happy Coloring!`
+            : `Created with love especially for ${options.childName} • Happy Coloring!`,
           coverPrompt: `${coverPromptPrefix}, cute ${options.theme} character smiling with decorative stars`,
           pages: fallbackPages,
         };
@@ -172,10 +254,14 @@ export default function App() {
         pageNumber: idx + 1,
         title: p.sceneTitle || `Scene ${idx + 1}`,
         storyCaption: p.storyCaption || `Coloring scene ${idx + 1}`,
+        secondaryCaption: p.secondaryCaption || (targetSecondaryLang ? `Coloring scene ${idx + 1}` : undefined),
+        secondaryLanguage: targetSecondaryLang,
         funFactOrTip: p.funFactOrTip || `Coloring tip: Try using your favorite bright colors here!`,
         prompt: p.imagePrompt || `Children's coloring book page of ${options.theme}`,
         status: 'generating',
         resolution: options.resolution,
+        activityMode: targetActivityMode,
+        numberLegend: p.numberLegend || (targetActivityMode === 'color-by-numbers' ? defaultLegend : undefined),
       }));
 
       const newBook: ColoringBook = {
@@ -183,6 +269,10 @@ export default function App() {
         theme: options.theme,
         childName: options.childName,
         difficulty: targetDifficulty,
+        activityMode: targetActivityMode,
+        language: 'en',
+        secondaryLanguage: targetSecondaryLang,
+        dedicationAuthor: cleanAuthor || undefined,
         title: explicitTitle || planData.bookTitle || `${options.childName}'s ${options.theme} Coloring Book`,
         subtitle: planData.subtitle || `A ${targetPageCount}-Page Adventure to Color`,
         dedication: planData.dedication || `Created especially for ${options.childName}`,
@@ -283,6 +373,10 @@ export default function App() {
 
       // Success celebration!
       setIsBookGenerationFinished(true);
+      setBook((currentBook) => {
+        setHistoryBooks(addBookToSessionHistory(currentBook));
+        return currentBook;
+      });
       try {
         confetti({
           particleCount: 100,
@@ -527,6 +621,51 @@ export default function App() {
     });
   };
 
+  // Restore session from localStorage
+  const handleRestoreLastSession = () => {
+    if (!autosavedSession || !autosavedSession.book) return;
+    setBook(autosavedSession.book);
+    setHistoryBooks(addBookToSessionHistory(autosavedSession.book));
+    setShowRestoreBanner(false);
+    playChimeSound('fanfare');
+    try {
+      confetti({ particleCount: 90, spread: 80, origin: { y: 0.5 } });
+    } catch (e) {}
+    const viewer = document.getElementById('coloring-book-viewer');
+    if (viewer) {
+      viewer.scrollIntoView({ behavior: 'smooth' });
+    }
+  };
+
+  // Re-load a book from current session history
+  const handleLoadHistoryBook = (historyBook: ColoringBook) => {
+    setBook(historyBook);
+    playChimeSound('sparkle');
+    const viewer = document.getElementById('coloring-book-viewer');
+    if (viewer) {
+      viewer.scrollIntoView({ behavior: 'smooth' });
+    }
+  };
+
+  // Remove a single book from session history
+  const handleRemoveHistoryBook = (bookId: string) => {
+    setHistoryBooks(removeBookFromSessionHistory(bookId));
+  };
+
+  // Clear all books from session history
+  const handleClearHistory = () => {
+    clearSessionHistory();
+    setHistoryBooks([]);
+  };
+
+  // Scroll smoothly to the History section
+  const handleScrollToHistory = () => {
+    const el = document.getElementById('session-history-section');
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth' });
+    }
+  };
+
   return (
     <div className="min-h-screen bg-[#faf8f5] text-gray-900 flex flex-col selection:bg-amber-200">
       {/* Top Application Header */}
@@ -539,10 +678,22 @@ export default function App() {
         onDirectPrint={() => setIsPdfModalOpen(true)}
         isGeneratingPdf={false}
         pageCount={book.pages.length}
+        historyCount={historyBooks.length}
+        onScrollToHistory={handleScrollToHistory}
       />
 
       {/* Main Content Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-8 py-6 sm:py-8 space-y-8">
+        {/* On page load: Restore Last Session banner if autosaved data exists */}
+        {showRestoreBanner && autosavedSession && autosavedSession.book && (
+          <RestoreSessionBanner
+            savedBook={autosavedSession.book}
+            savedAt={autosavedSession.savedAt}
+            onRestore={handleRestoreLastSession}
+            onDismiss={() => setShowRestoreBanner(false)}
+          />
+        )}
+
         {/* Active Generation Banner */}
         {isGeneratingBook && (
           <div className="p-4 rounded-2xl bg-amber-500 text-white shadow-lg flex items-center justify-between gap-4 animate-pulse">
@@ -569,10 +720,26 @@ export default function App() {
           initialChildName={book.childName}
           initialPageCount={book.pages.length}
           initialDifficulty={book.difficulty || 'standard'}
+          initialActivityMode={book.activityMode || 'standard'}
+          initialDedicationAuthor={book.dedicationAuthor || ''}
           initialResolution={book.resolution}
           initialAspectRatio={book.aspectRatio}
           isGenerating={isGeneratingBook}
           onGenerateBook={handleGenerateBook}
+        />
+
+        {/* Session History Section: View and quickly re-load up to 5 previously generated coloring books */}
+        <HistorySection
+          historyBooks={historyBooks}
+          activeBookId={book.id}
+          onLoadBook={handleLoadHistoryBook}
+          onRemoveBook={handleRemoveHistoryBook}
+          onClearHistory={handleClearHistory}
+          hasAutosavedSession={Boolean(autosavedSession && autosavedSession.book)}
+          autosavedBook={autosavedSession?.book}
+          autosavedSavedAt={autosavedSession?.savedAt}
+          onRestoreLastSession={handleRestoreLastSession}
+          isAutoSaved={true}
         />
 
         {/* Coloring Book View: Custom Cover + Distinct Coloring Pages + Filmstrip Navigation */}

@@ -1,5 +1,5 @@
 import React from 'react';
-import { Palette, MessageSquare, Download, Printer, BookOpen } from 'lucide-react';
+import { Palette, MessageSquare, Download, Printer, BookOpen, History } from 'lucide-react';
 
 interface HeaderProps {
   childName: string;
@@ -10,6 +10,8 @@ interface HeaderProps {
   onDirectPrint: () => void;
   isGeneratingPdf: boolean;
   pageCount: number;
+  historyCount?: number;
+  onScrollToHistory?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -21,6 +23,8 @@ export const Header: React.FC<HeaderProps> = ({
   onDirectPrint,
   isGeneratingPdf,
   pageCount,
+  historyCount = 0,
+  onScrollToHistory,
 }) => {
   const displayTitle = bookTitle?.trim() || (childName ? `${childName}'s ${theme || 'Coloring'} Book` : 'Coloring Book');
 
@@ -44,6 +48,24 @@ export const Header: React.FC<HeaderProps> = ({
 
         {/* Minimalist Actions */}
         <div className="flex items-center gap-2 shrink-0">
+          {/* History Button */}
+          {onScrollToHistory && (
+            <button
+              onClick={onScrollToHistory}
+              className="flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg bg-amber-50/90 hover:bg-amber-100 text-amber-900 border border-amber-200/90 text-xs font-semibold transition-colors cursor-pointer"
+              id="header-history-btn"
+              title="View up to 5 previously generated coloring books in this session"
+            >
+              <History className="w-3.5 h-3.5 text-amber-700" />
+              <span className="hidden sm:inline">History</span>
+              {historyCount > 0 && (
+                <span className="bg-amber-200 text-amber-900 text-[10px] font-bold px-1.5 py-0.2 rounded-full">
+                  {historyCount}
+                </span>
+              )}
+            </button>
+          )}
+
           {/* AI Story Chat Assistant */}
           <button
             onClick={onOpenChat}

@@ -46,13 +46,17 @@ app.post('/api/plan-book', async (req, res) => {
       theme = 'space dinosaurs',
       childName = 'Little Explorer',
       customTitle = '',
+      dedicationAuthor = '',
       userNotes = '',
       pageCount = 5,
       difficulty = 'standard',
+      activityMode = 'standard',
+      secondaryLanguage = '',
     } = req.body;
 
     const validPageCount = Math.max(1, Math.min(12, Number(pageCount) || 5));
     const explicitTitle = typeof customTitle === 'string' ? customTitle.trim() : '';
+    const cleanAuthor = typeof dedicationAuthor === 'string' ? dedicationAuthor.trim() : '';
     const ai = getGenAI();
 
     let difficultyInstruction = '';
@@ -76,22 +80,45 @@ app.post('/api/plan-book', async (req, res) => {
 - Every scene's imagePrompt MUST start with: "Children's coloring book page, bold crisp black outlines, pure white background, clear recognizable shapes, playful fun details, no shading, no gray fills, large coloring spaces for crayons and markers..."`;
     }
 
+    let activityInstruction = '';
+    if (activityMode === 'color-by-numbers') {
+      activityInstruction = `CRITICAL ACTIVITY MODE: COLOR-BY-NUMBERS
+- For every page, design a distinct 4 to 6 color numbered palette legend (e.g., 1: Sky Blue, 2: Sun Yellow, 3: Grass Green, 4: Fire Red, etc.).
+- In each scene's imagePrompt, explicitly specify: "Color by numbers coloring book page, numbered compartments with clear numbers (1, 2, 3, 4) in distinct coloring regions, bold crisp line art, pure white background, no shading, no gray fills..."
+- Provide numberLegend for each page containing array of items with { number, colorName, hex }.`;
+    } else if (activityMode === 'dot-to-dot') {
+      activityInstruction = `CRITICAL ACTIVITY MODE: CONNECT-THE-DOTS (DOT-TO-DOT)
+- In each scene's imagePrompt, explicitly specify: "Connect the dots puzzle coloring book page, sequential numbered dots 1 through 25 outlining the main character or object with clear dot circles and adjacent numbers, thick black lines for the rest of the scene, pure white background, no shading, kid-friendly activity puzzle..."`;
+    }
+
+    let languageInstruction = '';
+    if (secondaryLanguage && secondaryLanguage !== 'en') {
+      languageInstruction = `CRITICAL BILINGUAL STORY REQUIREMENT:
+- The user requested bilingual captions in language code "${secondaryLanguage}" (e.g., Spanish, French, German, Japanese, Italian, etc.).
+- For every page, in addition to the English storyCaption, provide "secondaryCaption" containing a beautiful, accurate, kid-friendly translation of the story caption in the requested language "${secondaryLanguage}".
+- Also provide "secondaryTitle" for the book in "${secondaryLanguage}".`;
+    }
+
     const prompt = `You are an expert children's coloring book author and illustrator planner.
 Create a personalized ${validPageCount}-page coloring book plan for a child named "${childName}" with the theme "${theme}".
 Difficulty Level: ${difficulty.toUpperCase()}.
+Activity Mode: ${activityMode.toUpperCase()}.
+${cleanAuthor ? `Book dedicated by: "${cleanAuthor}".` : ''}
 ${difficultyInstruction}
+${activityInstruction}
+${languageInstruction}
 ${userNotes ? `Additional user instructions: ${userNotes}` : ''}
 
 CRITICAL RULES:
 1. ${explicitTitle ? `PREFERRED BOOK TITLE OVERRIDE: The user has explicitly chosen the book title: "${explicitTitle}". You MUST use "${explicitTitle}" as the bookTitle.` : `Provide a catchy, joyful title (e.g. "${childName}'s ${theme} Adventure") and subtitle.`}
-2. Provide a heartwarming dedication for ${childName}.
+2. Provide a heartwarming dedication for ${childName}${cleanAuthor ? ` from ${cleanAuthor}` : ''}.
 3. Create exactly ${validPageCount} distinct, sequential coloring book scenes that tell a mini adventure. Ensure each page depicts a clearly different, creative action or setting within the theme so the scenes are varied and exciting.
 4. Each scene MUST have:
    - pageNumber (1 to ${validPageCount})
    - sceneTitle (short, playful title)
    - storyCaption (1-2 sentences of fun kid-friendly story text, rhyming or cheerful)
-   - funFactOrTip (a creative suggestion for coloring, such as "Make the rocket fiery red!" or "Color the giant mushrooms glowing purple!", OR an entertaining kid-friendly fun fact about the theme, such as "Did you know T-Rex had tiny arms?" or "Did you know sea turtles can hold their breath underwater for hours?")
-   - imagePrompt: Very detailed prompt engineered for black-and-white coloring book pages matching the difficulty level (${difficulty}). It MUST strictly follow the difficulty directive above and specify pure white background, no shading, no grayscale, no color fills.
+   - funFactOrTip (a creative suggestion for coloring, such as "Make the rocket fiery red!" or an entertaining kid-friendly fun fact)
+   - imagePrompt: Very detailed prompt engineered for black-and-white coloring book pages matching the difficulty level (${difficulty}) and activity mode (${activityMode}). It MUST strictly follow the directives above and specify pure white background, no shading, no grayscale, no color fills.
 5. Also provide a coverPrompt for the cover page illustration adhering to the ${difficulty} difficulty style.`;
 
     const response = await ai.models.generateContent({
@@ -105,6 +132,7 @@ CRITICAL RULES:
             bookTitle: { type: Type.STRING },
             subtitle: { type: Type.STRING },
             dedication: { type: Type.STRING },
+            secondaryTitle: { type: Type.STRING },
             coverPrompt: { type: Type.STRING },
             pages: {
               type: Type.ARRAY,
@@ -114,8 +142,21 @@ CRITICAL RULES:
                   pageNumber: { type: Type.INTEGER },
                   sceneTitle: { type: Type.STRING },
                   storyCaption: { type: Type.STRING },
+                  secondaryCaption: { type: Type.STRING },
                   funFactOrTip: { type: Type.STRING },
                   imagePrompt: { type: Type.STRING },
+                  numberLegend: {
+                    type: Type.ARRAY,
+                    items: {
+                      type: Type.OBJECT,
+                      properties: {
+                        number: { type: Type.INTEGER },
+                        colorName: { type: Type.STRING },
+                        hex: { type: Type.STRING },
+                      },
+                      required: ['number', 'colorName', 'hex'],
+                    },
+                  },
                 },
                 required: ['pageNumber', 'sceneTitle', 'storyCaption', 'funFactOrTip', 'imagePrompt'],
               },
@@ -264,6 +305,7 @@ app.post('/api/generate-image', async (req, res) => {
       imageSize = '1K', // "1K", "2K", or "4K"
       aspectRatio = '3:4', // 3:4 is standard portrait for printable pages
       difficulty = 'standard',
+      activityMode = 'standard',
     } = req.body;
 
     if (!prompt) {
@@ -282,8 +324,15 @@ app.post('/api/generate-image', async (req, res) => {
       difficultyDirective = 'Style: Classic children\'s coloring book page. Crisp thick black ink outlines, clean lines, wide open coloring spaces, zero gray shading, zero halftone dots, pure clean white paper background.';
     }
 
+    let activityDirective = '';
+    if (activityMode === 'color-by-numbers') {
+      activityDirective = 'Activity style: Color by numbers coloring book with clearly partitioned sections containing tiny clean numbers (1, 2, 3, 4, 5) for kids to color according to the palette legend.';
+    } else if (activityMode === 'dot-to-dot') {
+      activityDirective = 'Activity style: Connect the dots puzzle with sequential numbered dots (1 through 25) outlining the main subject for kids to connect with a line and then color.';
+    }
+
     // Ensure the prompt enforces clean, printable black-and-white thick line art matching difficulty
-    const enhancedPrompt = `${prompt}. ${difficultyDirective} Completely pure clean white paper background, absolutely zero gray shading, zero halftone dots, zero crosshatching, no grayscale, no color fills, high contrast black-and-white line drawing suitable for printing.`;
+    const enhancedPrompt = `${prompt}. ${difficultyDirective} ${activityDirective} Completely pure clean white paper background, absolutely zero gray shading, zero halftone dots, zero crosshatching, no grayscale, no color fills, high contrast black-and-white line drawing suitable for printing.`;
 
     const validSizes = ['1K', '2K', '4K'];
     const chosenSize = validSizes.includes(imageSize) ? imageSize : '1K';

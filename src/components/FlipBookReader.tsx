@@ -16,7 +16,7 @@ import {
   Check,
   AlertCircle,
 } from 'lucide-react';
-import { ColoringBook, ColoringPage } from '../types';
+import { ColoringBook, ColoringPage, ActivityMode, BookLanguage, NumberLegendItem } from '../types';
 import { playChimeSound } from '../utils/kidAudio';
 import { PageColorTesterCanvas } from './PageColorTesterCanvas';
 
@@ -32,6 +32,10 @@ export interface FlipBookSlide {
   subtitle?: string;
   dedication?: string;
   storyCaption?: string;
+  secondaryCaption?: string;
+  secondaryLanguage?: BookLanguage;
+  numberLegend?: NumberLegendItem[];
+  activityMode?: ActivityMode;
   funFactOrTip?: string;
   rawPage?: ColoringPage;
 }
@@ -45,6 +49,10 @@ export interface FlipBookReaderProps {
     pageNumber?: number;
     imageUrl: string;
     storyCaption?: string;
+    secondaryCaption?: string;
+    secondaryLanguage?: BookLanguage;
+    numberLegend?: NumberLegendItem[];
+    activityMode?: ActivityMode;
     funFactOrTip?: string;
     slideIndex?: number;
   }) => void;
@@ -139,16 +147,28 @@ export const FlipBookReader: React.FC<FlipBookReaderProps> = ({
   }
 
   book.pages.forEach((p) => {
+    const pageMode = p.activityMode || book.activityMode;
+    const modeBadge =
+      pageMode === 'color-by-numbers'
+        ? '🔢 Color by Numbers'
+        : pageMode === 'dot-to-dot'
+        ? '✏️ Connect the Dots'
+        : `PAGE ${p.pageNumber} OF ${book.pages.length}`;
+
     slides.push({
       id: `slide-${p.id}`,
       type: 'page',
       title: p.title,
       navLabel: `Page ${p.pageNumber}`,
-      badge: `PAGE ${p.pageNumber} OF ${book.pages.length}`,
+      badge: modeBadge,
       pageNumber: p.pageNumber,
       imageUrl: p.imageUrl,
       status: p.status,
       storyCaption: p.storyCaption,
+      secondaryCaption: p.secondaryCaption,
+      secondaryLanguage: p.secondaryLanguage || book.secondaryLanguage,
+      numberLegend: p.numberLegend,
+      activityMode: pageMode,
       funFactOrTip: p.funFactOrTip,
       rawPage: p,
     });
@@ -321,30 +341,46 @@ export const FlipBookReader: React.FC<FlipBookReaderProps> = ({
             {/* 1. SLIDE: COVER PAGE */}
             {currentSlide.type === 'cover' && (
               <div className="flex flex-col md:flex-row items-center gap-6 sm:gap-8">
-                {/* Cover Artwork Preview */}
+                {/* Cover Artwork Preview with Animated Entry/Exit */}
                 <div className="w-full md:w-72 shrink-0 aspect-3/4 rounded-2xl bg-white p-2.5 shadow-md border border-amber-200 ring-4 ring-amber-100/70 flex flex-col items-center justify-center relative group overflow-hidden">
-                  {book.coverImageUrl ? (
-                    <>
-                      <img
-                        src={book.coverImageUrl}
-                        alt="Custom Cover Art"
-                        referrerPolicy="no-referrer"
-                        className="w-full h-full object-contain rounded-xl filter contrast-125"
-                      />
-                      <button
-                        onClick={() => onZoomImage({ url: book.coverImageUrl!, title: `${book.childName}'s Cover Page` })}
-                        className="absolute inset-0 bg-black/40 text-white opacity-0 group-hover:opacity-100 flex items-center justify-center gap-1.5 font-bold text-xs rounded-xl transition-opacity cursor-pointer"
+                  <AnimatePresence mode="wait">
+                    {book.coverImageUrl ? (
+                      <motion.div
+                        key={`cover-${book.coverImageUrl}`}
+                        initial={{ opacity: 0, y: 12, scale: 0.96, filter: 'blur(3px)' }}
+                        animate={{ opacity: 1, y: 0, scale: 1, filter: 'blur(0px)' }}
+                        exit={{ opacity: 0, y: -12, scale: 0.96, filter: 'blur(2px)' }}
+                        transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
+                        className="w-full h-full relative flex items-center justify-center"
                       >
-                        <ZoomIn className="w-4 h-4" /> Fullscreen Preview
-                      </button>
-                    </>
-                  ) : (
-                    <div className="text-center p-4">
-                      <Sparkles className="w-8 h-8 text-amber-500 mx-auto mb-2 animate-bounce" />
-                      <p className="text-xs font-bold text-gray-800">Cover Artwork</p>
-                      <p className="text-[11px] text-gray-500">Thick-line coloring cover</p>
-                    </div>
-                  )}
+                        <img
+                          src={book.coverImageUrl}
+                          alt="Custom Cover Art"
+                          referrerPolicy="no-referrer"
+                          className="w-full h-full object-contain rounded-xl filter contrast-125"
+                        />
+                        <button
+                          onClick={() => onZoomImage({ url: book.coverImageUrl!, title: `${book.childName}'s Cover Page` })}
+                          className="absolute inset-0 bg-black/40 text-white opacity-0 group-hover:opacity-100 flex items-center justify-center gap-1.5 font-bold text-xs rounded-xl transition-opacity cursor-pointer"
+                        >
+                          <ZoomIn className="w-4 h-4" /> Fullscreen Preview
+                        </button>
+                      </motion.div>
+                    ) : (
+                      <motion.div
+                        key="cover-empty"
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        transition={{ duration: 0.2 }}
+                        className="text-center p-4"
+                      >
+                        <Sparkles className="w-8 h-8 text-amber-500 mx-auto mb-2 animate-bounce" />
+                        <p className="text-xs font-bold text-gray-800">Cover Artwork</p>
+                        <p className="text-[11px] text-gray-500">Thick-line coloring cover</p>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
                 </div>
 
                 {/* Cover Details & Actions */}
@@ -422,36 +458,61 @@ export const FlipBookReader: React.FC<FlipBookReaderProps> = ({
                   {/* Left: Line Art + Color Tester + Studio CTA */}
                   <div className="w-full lg:w-96 shrink-0 flex flex-col gap-3">
                     <div className="w-full aspect-3/4 bg-white rounded-2xl p-2.5 shadow-md border border-amber-200 ring-4 ring-amber-100/70 relative group overflow-hidden flex flex-col items-center justify-center">
-                      {page.imageUrl ? (
-                        <>
-                          <img
-                            src={page.imageUrl}
-                            alt={page.title}
-                            referrerPolicy="no-referrer"
-                            className="w-full h-full object-contain filter contrast-125"
-                          />
-                          <button
-                            onClick={() => onZoomImage({ url: page.imageUrl!, title: page.title })}
-                            className="absolute inset-0 bg-black/40 text-white opacity-0 group-hover:opacity-100 flex items-center justify-center gap-1.5 font-bold text-xs rounded-xl transition-opacity cursor-pointer"
+                      <AnimatePresence mode="wait">
+                        {page.imageUrl && !isRegen ? (
+                          <motion.div
+                            key={`page-img-${page.imageUrl}`}
+                            initial={{ opacity: 0, y: 12, scale: 0.96, filter: 'blur(3px)' }}
+                            animate={{ opacity: 1, y: 0, scale: 1, filter: 'blur(0px)' }}
+                            exit={{ opacity: 0, y: -12, scale: 0.96, filter: 'blur(2px)' }}
+                            transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
+                            className="w-full h-full relative flex items-center justify-center"
                           >
-                            <ZoomIn className="w-4 h-4" /> Full View
-                          </button>
-                        </>
-                      ) : (
-                        <div className="text-center p-4">
-                          {isRegen ? (
-                            <>
-                              <RefreshCw className="w-8 h-8 text-amber-500 mx-auto mb-2 animate-spin" />
+                            <img
+                              src={page.imageUrl}
+                              alt={page.title}
+                              referrerPolicy="no-referrer"
+                              className="w-full h-full object-contain filter contrast-125"
+                            />
+                            <button
+                              onClick={() => onZoomImage({ url: page.imageUrl!, title: page.title })}
+                              className="absolute inset-0 bg-black/40 text-white opacity-0 group-hover:opacity-100 flex items-center justify-center gap-1.5 font-bold text-xs rounded-xl transition-opacity cursor-pointer"
+                            >
+                              <ZoomIn className="w-4 h-4" /> Full View
+                            </button>
+                          </motion.div>
+                        ) : isRegen ? (
+                          <motion.div
+                            key={`drawing-${page.id}`}
+                            initial={{ opacity: 0, scale: 0.92, y: 8 }}
+                            animate={{ opacity: 1, scale: 1, y: 0 }}
+                            exit={{ opacity: 0, scale: 0.95, y: -8 }}
+                            transition={{ duration: 0.3 }}
+                            className="text-center p-4 flex flex-col items-center justify-center gap-2.5"
+                          >
+                            <div className="relative">
+                              <div className="w-10 h-10 border-3 border-amber-600 border-t-transparent rounded-full animate-spin"></div>
+                              <Sparkles className="w-4 h-4 text-amber-500 absolute inset-0 m-auto animate-pulse" />
+                            </div>
+                            <div>
                               <p className="text-xs font-bold text-gray-800">Drawing Scene...</p>
-                            </>
-                          ) : (
-                            <>
-                              <AlertCircle className="w-8 h-8 text-gray-400 mx-auto mb-2" />
-                              <p className="text-xs font-bold text-gray-800">No Image Yet</p>
-                            </>
-                          )}
-                        </div>
-                      )}
+                              <p className="text-[11px] text-gray-500">Creating line art outlines</p>
+                            </div>
+                          </motion.div>
+                        ) : (
+                          <motion.div
+                            key={`empty-${page.id}`}
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            transition={{ duration: 0.2 }}
+                            className="text-center p-4"
+                          >
+                            <AlertCircle className="w-8 h-8 text-gray-400 mx-auto mb-2" />
+                            <p className="text-xs font-bold text-gray-800">No Image Yet</p>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
                     </div>
 
                     {/* Quick Color Tester mini canvas */}
@@ -466,6 +527,10 @@ export const FlipBookReader: React.FC<FlipBookReaderProps> = ({
                             pageNumber: page.pageNumber,
                             imageUrl: page.imageUrl!,
                             storyCaption: page.storyCaption,
+                            secondaryCaption: page.secondaryCaption,
+                            secondaryLanguage: page.secondaryLanguage,
+                            numberLegend: page.numberLegend,
+                            activityMode: page.activityMode,
                             funFactOrTip: page.funFactOrTip,
                             slideIndex: safeIndex,
                           });
@@ -484,6 +549,10 @@ export const FlipBookReader: React.FC<FlipBookReaderProps> = ({
                             pageNumber: page.pageNumber,
                             imageUrl: page.imageUrl!,
                             storyCaption: page.storyCaption,
+                            secondaryCaption: page.secondaryCaption,
+                            secondaryLanguage: page.secondaryLanguage,
+                            numberLegend: page.numberLegend,
+                            activityMode: page.activityMode,
                             funFactOrTip: page.funFactOrTip,
                             slideIndex: safeIndex,
                           });
@@ -499,9 +568,21 @@ export const FlipBookReader: React.FC<FlipBookReaderProps> = ({
                   {/* Right: Scene Story, Tips, Action Bar */}
                   <div className="flex-1 min-w-0 text-left space-y-4 w-full">
                     <div className="flex items-center justify-between pb-3 border-b border-gray-100">
-                      <span className="px-3 py-1 rounded-md bg-gray-900 text-white text-xs font-bold tracking-wider">
-                        PAGE {page.pageNumber} OF {book.pages.length}
-                      </span>
+                      <div className="flex items-center gap-2">
+                        <span className="px-3 py-1 rounded-md bg-gray-900 text-white text-xs font-bold tracking-wider">
+                          PAGE {page.pageNumber} OF {book.pages.length}
+                        </span>
+                        {page.activityMode === 'color-by-numbers' && (
+                          <span className="px-2.5 py-0.5 rounded-full bg-amber-500 text-white text-xs font-black">
+                            🔢 Color by Numbers
+                          </span>
+                        )}
+                        {page.activityMode === 'dot-to-dot' && (
+                          <span className="px-2.5 py-0.5 rounded-full bg-sky-500 text-white text-xs font-black">
+                            ✏️ Dot-to-Dot
+                          </span>
+                        )}
+                      </div>
                       {page.status === 'completed' && (
                         <span className="text-xs font-semibold text-emerald-700 flex items-center gap-1 bg-emerald-50 px-2.5 py-0.5 rounded-full border border-emerald-200">
                           <Check className="w-3.5 h-3.5" /> Ready to Color
@@ -512,6 +593,63 @@ export const FlipBookReader: React.FC<FlipBookReaderProps> = ({
                     <h3 className="text-xl sm:text-2xl font-bold text-gray-900" style={{ fontFamily: "'Fredoka', sans-serif" }}>
                       {page.title}
                     </h3>
+
+                    {/* Activity Mode Interactive Legend */}
+                    {page.activityMode === 'color-by-numbers' && page.numberLegend && page.numberLegend.length > 0 && (
+                      <div className="p-3 rounded-2xl bg-amber-100/90 border border-amber-300 shadow-2xs space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-black text-amber-950 flex items-center gap-1.5">
+                            🔢 Color By Numbers Legend
+                          </span>
+                          <span className="text-[11px] font-semibold text-amber-800">
+                            Click to color in Studio!
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          {page.numberLegend.map((item) => (
+                            <button
+                              key={item.number}
+                              type="button"
+                              onClick={() => {
+                                playChimeSound('pop');
+                                onOpenColorStudio({
+                                  title: `Page ${page.pageNumber}: ${page.title}`,
+                                  pageNumber: page.pageNumber,
+                                  imageUrl: page.imageUrl!,
+                                  storyCaption: page.storyCaption,
+                                  secondaryCaption: page.secondaryCaption,
+                                  secondaryLanguage: page.secondaryLanguage,
+                                  numberLegend: page.numberLegend,
+                                  activityMode: page.activityMode,
+                                  funFactOrTip: page.funFactOrTip,
+                                  slideIndex: safeIndex,
+                                });
+                              }}
+                              className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-white border border-amber-300 shadow-2xs text-xs font-bold text-gray-800 hover:scale-105 active:scale-95 transition-all cursor-pointer"
+                              title={`Color ${item.number}: ${item.colorName}`}
+                            >
+                              <span
+                                className="w-4 h-4 rounded-full flex items-center justify-center text-[10px] text-white font-black shadow-2xs"
+                                style={{ backgroundColor: item.hex }}
+                              >
+                                {item.number}
+                              </span>
+                              <span>{item.colorName}</span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {page.activityMode === 'dot-to-dot' && (
+                      <div className="p-3 rounded-2xl bg-sky-50 border border-sky-300 shadow-2xs flex items-center gap-2.5">
+                        <span className="text-2xl select-none">✏️</span>
+                        <div>
+                          <p className="text-xs font-black text-sky-950">Dot-to-Dot Puzzle</p>
+                          <p className="text-[11px] text-sky-800">Connect the numbered dots in sequence from 1 to complete the picture outline!</p>
+                        </div>
+                      </div>
+                    )}
 
                     {/* Story Caption with Audio Read Aloud */}
                     <div className="p-3.5 rounded-2xl bg-amber-50/70 border border-amber-200 text-left flex items-start justify-between gap-3">
@@ -531,6 +669,35 @@ export const FlipBookReader: React.FC<FlipBookReaderProps> = ({
                         {speakingPageId === page.id ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
                       </button>
                     </div>
+
+                    {/* Secondary Bilingual Caption */}
+                    {page.secondaryCaption && (
+                      <div className="p-3 rounded-2xl bg-orange-50/80 border border-orange-200 text-left flex items-start justify-between gap-3">
+                        <div>
+                          <div className="flex items-center gap-1.5 mb-1">
+                            <span className="text-[10px] font-black uppercase tracking-wider bg-orange-200 text-orange-900 px-2 py-0.5 rounded-md">
+                              🌐 {page.secondaryLanguage ? page.secondaryLanguage.toUpperCase() : 'BILINGUAL'}
+                            </span>
+                            <span className="text-xs text-orange-950 font-bold">Story Translation</span>
+                          </div>
+                          <p className="text-sm text-orange-950 font-medium italic leading-relaxed">
+                            "{page.secondaryCaption}"
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => onReadAloud(`sec-${page.id}`, page.secondaryCaption!)}
+                          className={`shrink-0 p-2 rounded-xl border transition-colors cursor-pointer ${
+                            speakingPageId === `sec-${page.id}`
+                              ? 'bg-rose-500 text-white border-rose-600 animate-pulse'
+                              : 'bg-white text-orange-800 border-orange-200 hover:bg-orange-100'
+                          }`}
+                          title={speakingPageId === `sec-${page.id}` ? 'Stop reading' : '🔊 Listen to translation'}
+                        >
+                          {speakingPageId === `sec-${page.id}` ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+                        </button>
+                      </div>
+                    )}
 
                     {/* Coloring Tip & Fun Fact */}
                     {page.funFactOrTip && (
@@ -598,28 +765,44 @@ export const FlipBookReader: React.FC<FlipBookReaderProps> = ({
             {/* 3. SLIDE: BONUS STICKERS */}
             {currentSlide.type === 'stickers' && (
               <div className="flex flex-col lg:flex-row items-center gap-6 sm:gap-8">
-                <div className="w-full sm:w-72 shrink-0 aspect-3/4 bg-white border-2 border-dashed border-gray-800 rounded-2xl p-3 shadow-md relative group flex flex-col items-center justify-center">
-                  {book.stickerSheet?.imageUrl ? (
-                    <>
-                      <img
-                        src={book.stickerSheet.imageUrl}
-                        alt={book.stickerSheet.title}
-                        className="w-full h-full object-contain filter contrast-125"
-                      />
-                      <button
-                        onClick={() => onZoomImage({ url: book.stickerSheet!.imageUrl, title: book.stickerSheet!.title })}
-                        className="absolute inset-0 bg-black/40 text-white opacity-0 group-hover:opacity-100 flex items-center justify-center gap-1.5 font-bold text-xs rounded-2xl transition-opacity cursor-pointer"
+                <div className="w-full sm:w-72 shrink-0 aspect-3/4 bg-white border-2 border-dashed border-gray-800 rounded-2xl p-3 shadow-md relative group flex flex-col items-center justify-center overflow-hidden">
+                  <AnimatePresence mode="wait">
+                    {book.stickerSheet?.imageUrl ? (
+                      <motion.div
+                        key={`stickers-img-${book.stickerSheet.imageUrl}`}
+                        initial={{ opacity: 0, y: 12, scale: 0.96, filter: 'blur(3px)' }}
+                        animate={{ opacity: 1, y: 0, scale: 1, filter: 'blur(0px)' }}
+                        exit={{ opacity: 0, y: -12, scale: 0.96, filter: 'blur(2px)' }}
+                        transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
+                        className="w-full h-full relative flex items-center justify-center"
                       >
-                        <ZoomIn className="w-4 h-4" /> Full View
-                      </button>
-                    </>
-                  ) : (
-                    <div className="text-center p-4">
-                      <Scissors className="w-10 h-10 text-amber-500 mx-auto mb-2" />
-                      <p className="text-xs font-bold text-gray-800">Printable Stickers</p>
-                      <p className="text-[11px] text-gray-500 mt-1">Ready to generate cut-out badges!</p>
-                    </div>
-                  )}
+                        <img
+                          src={book.stickerSheet.imageUrl}
+                          alt={book.stickerSheet.title}
+                          className="w-full h-full object-contain filter contrast-125"
+                        />
+                        <button
+                          onClick={() => onZoomImage({ url: book.stickerSheet!.imageUrl, title: book.stickerSheet!.title })}
+                          className="absolute inset-0 bg-black/40 text-white opacity-0 group-hover:opacity-100 flex items-center justify-center gap-1.5 font-bold text-xs rounded-2xl transition-opacity cursor-pointer"
+                        >
+                          <ZoomIn className="w-4 h-4" /> Full View
+                        </button>
+                      </motion.div>
+                    ) : (
+                      <motion.div
+                        key="stickers-empty"
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        transition={{ duration: 0.2 }}
+                        className="text-center p-4"
+                      >
+                        <Scissors className="w-10 h-10 text-amber-500 mx-auto mb-2" />
+                        <p className="text-xs font-bold text-gray-800">Printable Stickers</p>
+                        <p className="text-[11px] text-gray-500 mt-1">Ready to generate cut-out badges!</p>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
                 </div>
 
                 <div className="flex-1 min-w-0 text-left space-y-3">

@@ -8,14 +8,19 @@ import {
   Sparkles,
   Volume2,
   VolumeX,
-  CheckCircle,
-  Paintbrush,
-  Eraser,
-  Palette,
-  Award
+  Award,
+  Music,
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
-import { playChimeSound, speakStory, stopSpeaking } from '../utils/kidAudio';
+import {
+  playChimeSound,
+  playSplashSound,
+  speakStory,
+  stopSpeaking,
+  isBackgroundMusicPlaying,
+  toggleBackgroundMusic,
+} from '../utils/kidAudio';
+import { NumberLegendItem, ActivityMode } from '../types';
 
 interface DigitalColoringModalProps {
   isOpen: boolean;
@@ -24,12 +29,32 @@ interface DigitalColoringModalProps {
   pageNumber?: number;
   imageUrl: string;
   storyCaption?: string;
+  secondaryCaption?: string;
+  secondaryLanguage?: string;
   funFactOrTip?: string;
   childName?: string;
+  numberLegend?: NumberLegendItem[];
+  activityMode?: ActivityMode;
 }
 
-type ToolType = 'crayon' | 'marker' | 'rainbow' | 'fill' | 'stamp' | 'eraser';
-type StampType = '⭐' | '💖' | '😊' | '🌸' | '👑' | '💎' | '🐾' | '🚀';
+type ToolType = 'crayon' | 'marker' | 'glitter' | 'rainbow' | 'fill' | 'stamp' | 'eraser';
+type StampType =
+  | '⭐'
+  | '💖'
+  | '🌸'
+  | '👑'
+  | '🐾'
+  | '🚀'
+  | '🦄'
+  | '🦖'
+  | '🍦'
+  | '🎨'
+  | '🌈'
+  | '🎈'
+  | '⚡'
+  | '🍀'
+  | '🦁'
+  | '🍪';
 
 const KID_PALETTE = [
   '#ef4444', // Red
@@ -56,7 +81,24 @@ const BRUSH_SIZES = [
   { label: 'Giant', size: 56 },
 ];
 
-const STAMPS: StampType[] = ['⭐', '💖', '😊', '🌸', '👑', '💎', '🐾', '🚀'];
+const STAMPS: StampType[] = [
+  '⭐',
+  '💖',
+  '🌸',
+  '👑',
+  '🐾',
+  '🚀',
+  '🦄',
+  '🦖',
+  '🍦',
+  '🎨',
+  '🌈',
+  '🎈',
+  '⚡',
+  '🍀',
+  '🦁',
+  '🍪',
+];
 
 export const DigitalColoringModal: React.FC<DigitalColoringModalProps> = ({
   isOpen,
@@ -65,8 +107,12 @@ export const DigitalColoringModal: React.FC<DigitalColoringModalProps> = ({
   pageNumber,
   imageUrl,
   storyCaption,
+  secondaryCaption,
+  secondaryLanguage = 'es',
   funFactOrTip,
   childName = 'Little Explorer',
+  numberLegend,
+  activityMode,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const lineArtImgRef = useRef<HTMLImageElement | null>(null);
@@ -76,10 +122,12 @@ export const DigitalColoringModal: React.FC<DigitalColoringModalProps> = ({
   const [brushSize, setBrushSize] = useState<number>(16);
   const [selectedStamp, setSelectedStamp] = useState<StampType>('⭐');
   const [isSpeaking, setIsSpeaking] = useState<boolean>(false);
+  const [speakingLanguage, setSpeakingLanguage] = useState<'en' | 'secondary'>('en');
   const [isDrawing, setIsDrawing] = useState<boolean>(false);
   const [history, setHistory] = useState<ImageData[]>([]);
   const [historyIndex, setHistoryIndex] = useState<number>(-1);
   const [isCelebrating, setIsCelebrating] = useState<boolean>(false);
+  const [isMusicOn, setIsMusicOn] = useState<boolean>(() => isBackgroundMusicPlaying());
   const rainbowHueRef = useRef<number>(0);
   const lastPointRef = useRef<{ x: number; y: number } | null>(null);
 
@@ -355,7 +403,7 @@ export const DigitalColoringModal: React.FC<DigitalColoringModalProps> = ({
     }
   };
 
-  // Draw brush stroke
+  // Draw brush stroke with Glitter, Rainbow, Crayon, Marker, Eraser
   const drawStroke = (x: number, y: number, isStart: boolean) => {
     const canvas = canvasRef.current;
     const ctx = canvas?.getContext('2d');
@@ -368,6 +416,22 @@ export const DigitalColoringModal: React.FC<DigitalColoringModalProps> = ({
     if (activeTool === 'eraser') {
       ctx.strokeStyle = '#ffffff';
       ctx.lineWidth = brushSize * 1.5;
+    } else if (activeTool === 'glitter') {
+      // Glitter stroke: sparkling stroke with glittering particle flecks
+      ctx.strokeStyle = selectedColor;
+      ctx.lineWidth = brushSize;
+      ctx.globalAlpha = 0.85;
+
+      const glitterColors = ['#ffd700', '#fbcfe8', '#38bdf8', '#f43f5e', '#a855f7', '#ffffff', '#4ade80'];
+      for (let i = 0; i < 4; i++) {
+        const offsetX = (Math.random() - 0.5) * brushSize * 1.8;
+        const offsetY = (Math.random() - 0.5) * brushSize * 1.8;
+        const sparkR = 1 + Math.random() * Math.max(2, brushSize * 0.25);
+        ctx.fillStyle = glitterColors[Math.floor(Math.random() * glitterColors.length)];
+        ctx.beginPath();
+        ctx.arc(x + offsetX, y + offsetY, sparkR, 0, Math.PI * 2);
+        ctx.fill();
+      }
     } else if (activeTool === 'rainbow') {
       rainbowHueRef.current = (rainbowHueRef.current + 6) % 360;
       ctx.strokeStyle = `hsl(${rainbowHueRef.current}, 90%, 55%)`;
@@ -396,18 +460,35 @@ export const DigitalColoringModal: React.FC<DigitalColoringModalProps> = ({
     ctx.restore();
   };
 
-  // Read story aloud
-  const handleToggleSpeak = () => {
-    if (isSpeaking) {
+  // Read story aloud with language choice
+  const handleToggleSpeak = (lang: 'en' | 'secondary' = 'en') => {
+    if (isSpeaking && speakingLanguage === lang) {
       stopSpeaking();
       setIsSpeaking(false);
     } else {
-      const textToRead = `${pageTitle}. ${storyCaption || ''}. ${funFactOrTip || ''}`;
+      stopSpeaking();
+      setSpeakingLanguage(lang);
+      const textToRead =
+        lang === 'secondary' && secondaryCaption
+          ? secondaryCaption
+          : `${pageTitle}. ${storyCaption || ''}. ${funFactOrTip || ''}`;
+
       setIsSpeaking(true);
-      speakStory(textToRead, () => {
-        setIsSpeaking(false);
+      const langCode = lang === 'secondary' ? secondaryLanguage : 'en-US';
+      speakStory(textToRead, {
+        lang: langCode,
+        onEnd: () => {
+          setIsSpeaking(false);
+        },
       });
     }
+  };
+
+  // Toggle Background Melody
+  const handleToggleMusic = () => {
+    const newState = toggleBackgroundMusic();
+    setIsMusicOn(newState);
+    playChimeSound('sparkle');
   };
 
   // Celebrate Masterpiece completion
@@ -467,20 +548,50 @@ export const DigitalColoringModal: React.FC<DigitalColoringModalProps> = ({
           </div>
 
           <div className="flex items-center gap-2">
+            {/* Background Music Toggle */}
+            <button
+              type="button"
+              onClick={handleToggleMusic}
+              className={`flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer shadow-xs ${
+                isMusicOn ? 'bg-amber-300 text-amber-950 ring-2 ring-white/50' : 'bg-white/20 hover:bg-white/30 text-white'
+              }`}
+              title="Toggle gentle lullaby background music"
+            >
+              <Music className={`w-3.5 h-3.5 ${isMusicOn ? 'animate-bounce' : ''}`} />
+              <span className="hidden sm:inline">{isMusicOn ? 'Melody: On' : 'Music'}</span>
+            </button>
+
             {/* Story Narrator Button */}
             {(storyCaption || funFactOrTip) && (
               <button
                 type="button"
-                onClick={handleToggleSpeak}
+                onClick={() => handleToggleSpeak('en')}
                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer shadow-xs ${
-                  isSpeaking
+                  isSpeaking && speakingLanguage === 'en'
                     ? 'bg-rose-500 text-white animate-pulse'
                     : 'bg-white/20 hover:bg-white/30 text-white'
                 }`}
-                title="Listen to the story read aloud"
+                title="Listen to the story read aloud in English"
               >
-                {isSpeaking ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
-                <span>{isSpeaking ? 'Stop Voice' : '🔊 Read to Me'}</span>
+                {isSpeaking && speakingLanguage === 'en' ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+                <span>{isSpeaking && speakingLanguage === 'en' ? 'Stop' : '🔊 Read'}</span>
+              </button>
+            )}
+
+            {/* Bilingual Secondary Story Narrator Button */}
+            {secondaryCaption && (
+              <button
+                type="button"
+                onClick={() => handleToggleSpeak('secondary')}
+                className={`flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer shadow-xs ${
+                  isSpeaking && speakingLanguage === 'secondary'
+                    ? 'bg-rose-500 text-white animate-pulse'
+                    : 'bg-white/20 hover:bg-white/30 text-white'
+                }`}
+                title={`Listen in ${secondaryLanguage.toUpperCase()}`}
+              >
+                <span className="text-xs">🌐</span>
+                <span className="text-[11px] font-bold">{secondaryLanguage.toUpperCase()}</span>
               </button>
             )}
 
@@ -527,13 +638,14 @@ export const DigitalColoringModal: React.FC<DigitalColoringModalProps> = ({
               <span className="text-[11px] font-black uppercase tracking-wider text-gray-500 block">
                 Pick Your Tool:
               </span>
-              <div className="grid grid-cols-3 gap-1.5">
+              <div className="grid grid-cols-4 gap-1.5">
                 {[
                   { id: 'crayon' as ToolType, label: 'Crayon', icon: '🖍️' },
                   { id: 'marker' as ToolType, label: 'Marker', icon: '🖌️' },
+                  { id: 'glitter' as ToolType, label: 'Glitter', icon: '✨' },
                   { id: 'rainbow' as ToolType, label: 'Rainbow', icon: '🌈' },
-                  { id: 'fill' as ToolType, label: 'Paint Bucket', icon: '🪣' },
-                  { id: 'stamp' as ToolType, label: 'Stickers', icon: '✨' },
+                  { id: 'fill' as ToolType, label: 'Fill', icon: '🪣' },
+                  { id: 'stamp' as ToolType, label: 'Stamps', icon: '⭐' },
                   { id: 'eraser' as ToolType, label: 'Eraser', icon: '🧽' },
                 ].map((tool) => {
                   const isSelected = activeTool === tool.id;
@@ -545,20 +657,20 @@ export const DigitalColoringModal: React.FC<DigitalColoringModalProps> = ({
                         setActiveTool(tool.id);
                         playChimeSound('pop');
                       }}
-                      className={`p-2 rounded-xl text-xs font-black flex flex-col items-center gap-1 transition-all cursor-pointer ${
+                      className={`p-1.5 rounded-xl text-xs font-black flex flex-col items-center gap-1 transition-all cursor-pointer ${
                         isSelected
                           ? 'bg-amber-500 text-white shadow-sm scale-105 border-2 border-amber-600'
                           : 'bg-gray-50 hover:bg-amber-50 text-gray-800 border border-gray-200'
                       }`}
                     >
-                      <span className="text-xl select-none">{tool.icon}</span>
-                      <span className="text-[11px]">{tool.label}</span>
+                      <span className="text-lg select-none">{tool.icon}</span>
+                      <span className="text-[10px]">{tool.label}</span>
                     </button>
                   );
                 })}
               </div>
 
-              {/* Brush Size Selector (for drawing & eraser) */}
+              {/* Brush Size Selector */}
               {activeTool !== 'fill' && activeTool !== 'stamp' && (
                 <div className="pt-2 border-t border-gray-100">
                   <div className="flex items-center justify-between text-[11px] font-bold text-gray-600 mb-1">
@@ -583,13 +695,13 @@ export const DigitalColoringModal: React.FC<DigitalColoringModalProps> = ({
                 </div>
               )}
 
-              {/* Sticker Selector when activeTool === 'stamp' */}
+              {/* 16 Stickers & Stamps Grid */}
               {activeTool === 'stamp' && (
                 <div className="pt-2 border-t border-gray-100">
                   <span className="text-[11px] font-bold text-gray-600 block mb-1">
-                    Tap to Stamp on Canvas:
+                    Pick a Stamp to Place on Canvas:
                   </span>
-                  <div className="flex gap-1.5 overflow-x-auto pb-1">
+                  <div className="grid grid-cols-8 gap-1">
                     {STAMPS.map((st) => (
                       <button
                         key={st}
@@ -598,7 +710,7 @@ export const DigitalColoringModal: React.FC<DigitalColoringModalProps> = ({
                           setSelectedStamp(st);
                           playChimeSound('sparkle');
                         }}
-                        className={`text-xl p-1.5 rounded-lg border cursor-pointer ${
+                        className={`text-lg p-1 rounded-lg border cursor-pointer flex items-center justify-center ${
                           selectedStamp === st
                             ? 'border-amber-500 bg-amber-100 scale-110'
                             : 'border-gray-200 bg-white hover:bg-gray-50'
@@ -611,6 +723,64 @@ export const DigitalColoringModal: React.FC<DigitalColoringModalProps> = ({
                 </div>
               )}
             </div>
+
+            {/* DOT-TO-DOT TIP BANNER (If dot-to-dot mode) */}
+            {activityMode === 'dot-to-dot' && (
+              <div className="bg-sky-50 rounded-2xl p-2.5 border-2 border-sky-300 shadow-xs flex items-center gap-2">
+                <span className="text-xl select-none">✏️</span>
+                <div>
+                  <span className="text-[11px] font-black uppercase tracking-wider text-sky-900 block">
+                    Connect the Dots!
+                  </span>
+                  <p className="text-[11px] text-sky-800 font-medium leading-tight">
+                    Select Marker or Crayon to connect dots 1, 2, 3... in numerical order!
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* COLOR BY NUMBERS KEY (If available for page) */}
+            {numberLegend && numberLegend.length > 0 && (
+              <div className="bg-amber-100/90 rounded-2xl p-2.5 border-2 border-amber-300 shadow-xs space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-black uppercase tracking-wider text-amber-900 block">
+                    🔢 Color By Numbers Key:
+                  </span>
+                  <span className="text-[10px] text-amber-800 font-bold">Tap to select</span>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {numberLegend.map((item) => {
+                    const isSelected = selectedColor.toLowerCase() === item.hex.toLowerCase();
+                    return (
+                      <button
+                        key={item.number}
+                        type="button"
+                        onClick={() => {
+                          setSelectedColor(item.hex);
+                          if (activeTool === 'eraser' || activeTool === 'rainbow') {
+                            setActiveTool('fill');
+                          }
+                          playSplashSound(1.1);
+                        }}
+                        className={`flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                          isSelected
+                            ? 'bg-amber-500 text-white shadow-md scale-105 ring-2 ring-amber-600'
+                            : 'bg-white border border-amber-300 text-gray-900 hover:scale-105 shadow-2xs'
+                        }`}
+                        title={`Select Color ${item.number}: ${item.colorName}`}
+                      >
+                        <span
+                          className={`w-3.5 h-3.5 rounded-full border ${isSelected ? 'border-white ring-1 ring-white' : 'border-gray-400'}`}
+                          style={{ backgroundColor: item.hex }}
+                        />
+                        <span className="font-extrabold">[{item.number}]</span>
+                        <span className={`text-[10px] ${isSelected ? 'text-white' : 'text-gray-600'}`}>{item.colorName}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
 
             {/* COLOR PALETTE */}
             {activeTool !== 'rainbow' && activeTool !== 'eraser' && (
@@ -633,7 +803,7 @@ export const DigitalColoringModal: React.FC<DigitalColoringModalProps> = ({
                         type="button"
                         onClick={() => {
                           setSelectedColor(color);
-                          playChimeSound('pop');
+                          playSplashSound();
                         }}
                         style={{ backgroundColor: color }}
                         className={`h-8 rounded-xl border-2 transition-all cursor-pointer ${
@@ -702,13 +872,18 @@ export const DigitalColoringModal: React.FC<DigitalColoringModalProps> = ({
           </div>
         </div>
 
-        {/* BOTTOM STORY TICKER */}
-        {(storyCaption || funFactOrTip) && (
+        {/* BOTTOM STORY TICKER WITH BILINGUAL SUPPORT */}
+        {(storyCaption || funFactOrTip || secondaryCaption) && (
           <div className="bg-amber-100/80 px-4 py-2.5 border-t border-amber-300 text-left flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
             <div className="flex-1 min-w-0">
               {storyCaption && (
                 <p className="font-semibold text-gray-800 line-clamp-1 italic">
                   "{storyCaption}"
+                </p>
+              )}
+              {secondaryCaption && (
+                <p className="text-[11px] text-amber-900 font-semibold line-clamp-1">
+                  🌐 <span className="uppercase text-[10px] font-bold text-amber-700">[{secondaryLanguage}]:</span> "{secondaryCaption}"
                 </p>
               )}
               {funFactOrTip && (
@@ -718,14 +893,26 @@ export const DigitalColoringModal: React.FC<DigitalColoringModalProps> = ({
               )}
             </div>
 
-            <button
-              type="button"
-              onClick={handleToggleSpeak}
-              className="shrink-0 flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white border border-amber-300 text-amber-900 font-bold text-[11px] hover:bg-amber-50 cursor-pointer"
-            >
-              <Volume2 className="w-3.5 h-3.5 text-amber-600" />
-              <span>{isSpeaking ? 'Pause' : 'Read Story'}</span>
-            </button>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                type="button"
+                onClick={() => handleToggleSpeak('en')}
+                className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white border border-amber-300 text-amber-900 font-bold text-[11px] hover:bg-amber-50 cursor-pointer"
+              >
+                <Volume2 className="w-3.5 h-3.5 text-amber-600" />
+                <span>{isSpeaking && speakingLanguage === 'en' ? 'Pause' : 'Read English'}</span>
+              </button>
+
+              {secondaryCaption && (
+                <button
+                  type="button"
+                  onClick={() => handleToggleSpeak('secondary')}
+                  className="flex items-center gap-1 px-2 py-1 rounded-lg bg-amber-200 border border-amber-400 text-amber-950 font-bold text-[11px] hover:bg-amber-300 cursor-pointer"
+                >
+                  <span>Read {secondaryLanguage.toUpperCase()}</span>
+                </button>
+              )}
+            </div>
           </div>
         )}
       </div>

@@ -19,13 +19,20 @@ export const PdfExportModal: React.FC<PdfExportModalProps> = ({
 
   const [paperSize, setPaperSize] = useState<'letter' | 'a4'>('letter');
   const [includeCover, setIncludeCover] = useState(true);
+  const [includeDedicationPage, setIncludeDedicationPage] = useState(true);
+  const [includeCertificate, setIncludeCertificate] = useState(true);
   const [includeCaptions, setIncludeCaptions] = useState(true);
   const [includeStickers, setIncludeStickers] = useState(true);
   const [isProcessing, setIsProcessing] = useState(false);
   const [progressPercent, setProgressPercent] = useState(0);
   const [statusText, setStatusText] = useState('');
 
-  const totalPages = (includeCover ? 1 : 0) + book.pages.length + (includeStickers && book.stickerSheet?.imageUrl ? 1 : 0);
+  const totalPages =
+    (includeCover ? 1 : 0) +
+    (includeDedicationPage ? 1 : 0) +
+    book.pages.length +
+    (includeCertificate ? 1 : 0) +
+    (includeStickers && book.stickerSheet?.imageUrl ? 1 : 0);
 
   const triggerCelebration = () => {
     try {
@@ -48,6 +55,8 @@ export const PdfExportModal: React.FC<PdfExportModalProps> = ({
       const options: GeneratePdfOptions = {
         paperSize,
         includeCover,
+        includeDedicationPage,
+        includeCertificate,
         includeStickers,
         includeCaptions,
         onProgress: (percent, text) => {
@@ -82,6 +91,8 @@ export const PdfExportModal: React.FC<PdfExportModalProps> = ({
       const options: GeneratePdfOptions = {
         paperSize,
         includeCover,
+        includeDedicationPage,
+        includeCertificate,
         includeStickers,
         includeCaptions,
         onProgress: (percent, text) => {
@@ -195,6 +206,30 @@ export const PdfExportModal: React.FC<PdfExportModalProps> = ({
               />
               <span className="text-xs font-semibold text-gray-800">
                 Include Custom Cover Page (with "{book.childName}'s Coloring Book" title & border)
+              </span>
+            </label>
+
+            <label className="flex items-center gap-2.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={includeDedicationPage}
+                onChange={(e) => setIncludeDedicationPage(e.target.checked)}
+                className="w-4 h-4 rounded-sm text-amber-600 focus:ring-amber-500 border-gray-300"
+              />
+              <span className="text-xs font-semibold text-gray-800">
+                Include Dedication Page & Crayon Color Tester Palette (with message for {book.childName})
+              </span>
+            </label>
+
+            <label className="flex items-center gap-2.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={includeCertificate}
+                onChange={(e) => setIncludeCertificate(e.target.checked)}
+                className="w-4 h-4 rounded-sm text-amber-600 focus:ring-amber-500 border-gray-300"
+              />
+              <span className="text-xs font-semibold text-gray-800">
+                Include Official "Master Artist" Award Certificate of Completion
               </span>
             </label>
 
