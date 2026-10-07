@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { X, RefreshCw, Check, Sparkles, Sliders } from 'lucide-react';
 import { ColoringPage, ImageResolution } from '../types';
 
@@ -21,13 +21,24 @@ export const PageEditorModal: React.FC<PageEditorModalProps> = ({
   onSaveAndRegenerate,
   isRegenerating,
 }) => {
-  if (!page) return null;
+  const [title, setTitle] = useState(page?.title || '');
+  const [storyCaption, setStoryCaption] = useState(page?.storyCaption || '');
+  const [funFactOrTip, setFunFactOrTip] = useState(page?.funFactOrTip || '');
+  const [prompt, setPrompt] = useState(page?.prompt || '');
+  const [resolution, setResolution] = useState<ImageResolution>(page?.resolution || '2K');
 
-  const [title, setTitle] = useState(page.title);
-  const [storyCaption, setStoryCaption] = useState(page.storyCaption);
-  const [funFactOrTip, setFunFactOrTip] = useState(page.funFactOrTip || '');
-  const [prompt, setPrompt] = useState(page.prompt);
-  const [resolution, setResolution] = useState<ImageResolution>(page.resolution || '2K');
+  // Synchronize fields when active page changes
+  useEffect(() => {
+    if (page) {
+      setTitle(page.title);
+      setStoryCaption(page.storyCaption);
+      setFunFactOrTip(page.funFactOrTip || '');
+      setPrompt(page.prompt);
+      setResolution(page.resolution || '2K');
+    }
+  }, [page]);
+
+  if (!page) return null;
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();

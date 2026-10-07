@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   ChevronLeft,
@@ -15,10 +15,16 @@ import {
   Scissors,
   Check,
   AlertCircle,
+  Film,
+  Building2,
+  Globe,
+  ExternalLink,
 } from 'lucide-react';
-import { ColoringBook, ColoringPage, ActivityMode, BookLanguage, NumberLegendItem } from '../types';
+import { ColoringBook, ColoringPage, ActivityMode, BookLanguage, NumberLegendItem, PageBorderStyle, PlacedSticker } from '../types';
 import { playChimeSound } from '../utils/kidAudio';
 import { PageColorTesterCanvas } from './PageColorTesterCanvas';
+import { PageBorderRenderer } from './PageBorderRenderer';
+import { VoiceRecorderWidget } from './VoiceRecorderWidget';
 
 export interface FlipBookSlide {
   id: string;
@@ -45,6 +51,7 @@ export interface FlipBookReaderProps {
   activePageIndex: number;
   onPageChange: (index: number) => void;
   onOpenColorStudio: (pageData: {
+    pageId?: string;
     title: string;
     pageNumber?: number;
     imageUrl: string;
@@ -54,6 +61,9 @@ export interface FlipBookReaderProps {
     numberLegend?: NumberLegendItem[];
     activityMode?: ActivityMode;
     funFactOrTip?: string;
+    borderStyle?: PageBorderStyle;
+    placedStickers?: PlacedSticker[];
+    voiceAudioUrl?: string;
     slideIndex?: number;
   }) => void;
   onZoomImage: (image: { url: string; title: string }) => void;
@@ -66,44 +76,56 @@ export interface FlipBookReaderProps {
   regeneratingIds: Record<string, boolean>;
   speakingPageId: string | null;
   onReadAloud: (pageId: string, text: string) => void;
+  onSaveVoiceAudio?: (pageId: string, audioUrl: string, duration: number) => void;
 }
 
-// 3D realistic page flip transition variants
+// Subtle, realistic 3D paper page-flip transition variants
 const pageFlipVariants = {
   enter: (direction: number) => ({
-    x: direction > 0 ? 260 : -260,
-    rotateY: direction > 0 ? 32 : -32,
+    x: direction > 0 ? 32 : -32,
+    rotateY: direction > 0 ? 15 : -15,
+    skewY: direction > 0 ? -0.7 : 0.7,
     opacity: 0,
-    scale: 0.94,
+    scale: 0.985,
     transformOrigin: direction > 0 ? 'left center' : 'right center',
-    boxShadow: direction > 0 ? '-24px 20px 30px rgba(0,0,0,0.18)' : '24px 20px 30px rgba(0,0,0,0.18)',
+    boxShadow:
+      direction > 0
+        ? '-14px 10px 24px -6px rgba(0,0,0,0.12), inset 8px 0 16px -8px rgba(0,0,0,0.05)'
+        : '14px 10px 24px -6px rgba(0,0,0,0.12), inset -8px 0 16px -8px rgba(0,0,0,0.05)',
   }),
   center: {
     x: 0,
     rotateY: 0,
+    skewY: 0,
     opacity: 1,
     scale: 1,
     transformOrigin: 'center center',
-    boxShadow: '0 10px 28px -6px rgba(0,0,0,0.12)',
+    boxShadow: '0 10px 28px -6px rgba(0,0,0,0.10)',
     transition: {
-      x: { type: 'spring', stiffness: 280, damping: 28 },
-      rotateY: { duration: 0.42, ease: [0.25, 1, 0.5, 1] },
-      opacity: { duration: 0.28 },
-      scale: { duration: 0.3 },
+      x: { type: 'spring', stiffness: 320, damping: 30, mass: 0.8 },
+      rotateY: { duration: 0.35, ease: [0.22, 1, 0.36, 1] },
+      skewY: { duration: 0.35, ease: [0.22, 1, 0.36, 1] },
+      opacity: { duration: 0.22 },
+      scale: { duration: 0.3, ease: [0.22, 1, 0.36, 1] },
     },
   },
   exit: (direction: number) => ({
-    x: direction > 0 ? -260 : 260,
-    rotateY: direction > 0 ? -32 : 32,
+    x: direction > 0 ? -32 : 32,
+    rotateY: direction > 0 ? -18 : 18,
+    skewY: direction > 0 ? 0.7 : -0.7,
     opacity: 0,
-    scale: 0.94,
+    scale: 0.98,
     transformOrigin: direction > 0 ? 'right center' : 'left center',
-    boxShadow: direction > 0 ? '24px 20px 30px rgba(0,0,0,0.18)' : '-24px 20px 30px rgba(0,0,0,0.18)',
+    boxShadow:
+      direction > 0
+        ? '14px 10px 24px -6px rgba(0,0,0,0.12), inset -8px 0 16px -8px rgba(0,0,0,0.05)'
+        : '-14px 10px 24px -6px rgba(0,0,0,0.12), inset 8px 0 16px -8px rgba(0,0,0,0.05)',
     transition: {
-      x: { type: 'spring', stiffness: 280, damping: 28 },
-      rotateY: { duration: 0.38, ease: [0.25, 1, 0.5, 1] },
-      opacity: { duration: 0.22 },
-      scale: { duration: 0.25 },
+      x: { type: 'spring', stiffness: 320, damping: 30, mass: 0.8 },
+      rotateY: { duration: 0.3, ease: [0.22, 1, 0.36, 1] },
+      skewY: { duration: 0.3, ease: [0.22, 1, 0.36, 1] },
+      opacity: { duration: 0.18 },
+      scale: { duration: 0.26 },
     },
   }),
 };
@@ -123,8 +145,19 @@ export const FlipBookReader: React.FC<FlipBookReaderProps> = ({
   regeneratingIds,
   speakingPageId,
   onReadAloud,
+  onSaveVoiceAudio,
 }) => {
   const [flipDirection, setFlipDirection] = useState<number>(1);
+  const prevActiveIndexRef = useRef<number>(activePageIndex);
+
+  // Sync flipDirection when activePageIndex changes externally
+  useEffect(() => {
+    if (activePageIndex !== prevActiveIndexRef.current) {
+      setFlipDirection(activePageIndex > prevActiveIndexRef.current ? 1 : -1);
+      prevActiveIndexRef.current = activePageIndex;
+    }
+  }, [activePageIndex]);
+
   const [isRegeneratingStickers, setIsRegeneratingStickers] = useState(false);
 
   // Compile sequential book slides (Cover -> Story Pages -> Bonus Stickers)
@@ -162,7 +195,7 @@ export const FlipBookReader: React.FC<FlipBookReaderProps> = ({
       navLabel: `Page ${p.pageNumber}`,
       badge: modeBadge,
       pageNumber: p.pageNumber,
-      imageUrl: p.imageUrl,
+      imageUrl: p.coloredImageUrl || p.imageUrl,
       status: p.status,
       storyCaption: p.storyCaption,
       secondaryCaption: p.secondaryCaption,
@@ -233,6 +266,45 @@ export const FlipBookReader: React.FC<FlipBookReaderProps> = ({
       setIsRegeneratingStickers(false);
     }
   };
+
+  // Film Strip thumbnail navigation state and handlers
+  const filmStripScrollRef = useRef<HTMLDivElement>(null);
+  const [canScrollStripLeft, setCanScrollStripLeft] = useState(false);
+  const [canScrollStripRight, setCanScrollStripRight] = useState(false);
+
+  const checkStripScroll = () => {
+    const el = filmStripScrollRef.current;
+    if (!el) return;
+    setCanScrollStripLeft(el.scrollLeft > 6);
+    setCanScrollStripRight(el.scrollLeft + el.clientWidth < el.scrollWidth - 6);
+  };
+
+  useEffect(() => {
+    checkStripScroll();
+    const el = filmStripScrollRef.current;
+    if (!el) return;
+    el.addEventListener('scroll', checkStripScroll, { passive: true });
+    window.addEventListener('resize', checkStripScroll);
+    return () => {
+      el.removeEventListener('scroll', checkStripScroll);
+      window.removeEventListener('resize', checkStripScroll);
+    };
+  }, [slides.length]);
+
+  const scrollFilmStrip = (direction: 'left' | 'right') => {
+    if (!filmStripScrollRef.current) return;
+    const distance = direction === 'left' ? -220 : 220;
+    filmStripScrollRef.current.scrollBy({ left: distance, behavior: 'smooth' });
+    playChimeSound('pop');
+  };
+
+  // Keep active thumbnail centered in film strip
+  useEffect(() => {
+    const el = document.getElementById(`reader-film-thumb-${safeIndex}`);
+    if (el && filmStripScrollRef.current) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+    }
+  }, [safeIndex]);
 
   return (
     <div className="space-y-4">
@@ -336,8 +408,16 @@ export const FlipBookReader: React.FC<FlipBookReaderProps> = ({
             animate="center"
             exit="exit"
             style={{ transformStyle: 'preserve-3d' }}
-            className="w-full bg-white rounded-3xl border border-amber-200/80 p-4 sm:p-7 shadow-sm"
+            className="w-full bg-white rounded-3xl border border-amber-200/80 p-4 sm:p-7 shadow-sm relative overflow-hidden"
           >
+            {/* Subtle Paper Flip Light Curl Sheen */}
+            <motion.div
+              key={`page-sheen-${currentSlide.id}`}
+              initial={{ opacity: 0.18, x: flipDirection > 0 ? -30 : 30 }}
+              animate={{ opacity: 0, x: 0 }}
+              transition={{ duration: 0.35, ease: 'easeOut' }}
+              className="absolute inset-0 pointer-events-none rounded-3xl bg-linear-to-r from-transparent via-amber-200/20 to-transparent z-10"
+            />
             {/* 1. SLIDE: COVER PAGE */}
             {currentSlide.type === 'cover' && (
               <div className="flex flex-col md:flex-row items-center gap-6 sm:gap-8">
@@ -403,6 +483,46 @@ export const FlipBookReader: React.FC<FlipBookReaderProps> = ({
                       <strong>Color Your Own Cover:</strong> Printed with large coloring title fonts so {book.childName} can color their own book cover!
                     </p>
                   </div>
+
+                  {/* Brand & Website Presentation Banner */}
+                  {book.brandIntegration?.enabled && book.brandIntegration.showOnCover && (
+                    <div className="p-3 rounded-2xl bg-linear-to-r from-amber-50 to-orange-50 border border-amber-300/80 flex items-center justify-between gap-3 shadow-2xs">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        {book.brandIntegration.logoUrl ? (
+                          <img
+                            src={book.brandIntegration.logoUrl}
+                            alt="Brand Logo"
+                            className="w-8 h-8 rounded-lg object-contain bg-white p-0.5 border border-amber-200 shrink-0"
+                          />
+                        ) : (
+                          <Building2 className="w-5 h-5 text-amber-700 shrink-0" />
+                        )}
+                        <div className="min-w-0">
+                          <span className="text-[10px] uppercase font-bold text-amber-800 tracking-wider block truncate">
+                            {book.brandIntegration.tagline || 'Presented by'}
+                          </span>
+                          <span className="text-xs font-black text-gray-900 block truncate">
+                            {book.brandIntegration.organizationName}
+                          </span>
+                        </div>
+                      </div>
+
+                      {book.brandIntegration.websiteUrl && (
+                        <a
+                          href={book.brandIntegration.websiteUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-white hover:bg-amber-100 text-amber-900 border border-amber-200 text-[11px] font-bold transition-all shrink-0 shadow-2xs"
+                        >
+                          <Globe className="w-3 h-3 text-amber-600" />
+                          <span className="max-w-[130px] truncate">
+                            {book.brandIntegration.websiteUrl.replace(/^https?:\/\//, '')}
+                          </span>
+                          <ExternalLink className="w-2.5 h-2.5 opacity-60" />
+                        </a>
+                      )}
+                    </div>
+                  )}
 
                   <div className="flex flex-wrap items-center gap-2.5 pt-2">
                     {book.coverImageUrl && (
@@ -474,9 +594,56 @@ export const FlipBookReader: React.FC<FlipBookReaderProps> = ({
                               referrerPolicy="no-referrer"
                               className="w-full h-full object-contain filter contrast-125"
                             />
+
+                            {/* Customizable Page Border Overlay */}
+                            <div className="absolute inset-0 pointer-events-none">
+                              <PageBorderRenderer
+                                borderStyle={
+                                  page.borderStyle || book.defaultBorderStyle || 'classic-double'
+                                }
+                              />
+                            </div>
+
+                            {/* Placed Stickers overlay if not baked into coloredImageUrl */}
+                            {!page.coloredImageUrl && page.placedStickers && page.placedStickers.length > 0 && (
+                              <div className="absolute inset-0 pointer-events-none">
+                                {page.placedStickers.map((st) => (
+                                  <div
+                                    key={st.id}
+                                    className="absolute select-none"
+                                    style={{
+                                      left: `${st.x}%`,
+                                      top: `${st.y}%`,
+                                      transform: `translate(-50%, -50%) rotate(${st.rotation}deg) scale(${st.scale})`,
+                                    }}
+                                  >
+                                    <span className="text-2xl drop-shadow-md">{st.emoji}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+
+                            {/* Colored artwork badge */}
+                            {page.coloredImageUrl && (
+                              <div className="absolute top-2 right-2 bg-amber-500 text-white text-[10px] font-black px-2 py-0.5 rounded-full shadow-xs flex items-center gap-1 z-10">
+                                <Sparkles className="w-3 h-3" /> Colored!
+                              </div>
+                            )}
+
+                            {/* Corner QR code badge indicator */}
+                            {book.includeQrCode !== false && (
+                              <div
+                                className="absolute bottom-2 right-2 bg-white/90 border border-gray-300 rounded-md px-1.5 py-0.5 text-[9px] font-black text-gray-700 shadow-2xs z-10 select-none flex items-center gap-1"
+                                title="QR Code for audio read-along included on printouts"
+                              >
+                                <span>📱</span>
+                                <span>QR Audio</span>
+                              </div>
+                            )}
+
                             <button
                               onClick={() => onZoomImage({ url: page.imageUrl!, title: page.title })}
-                              className="absolute inset-0 bg-black/40 text-white opacity-0 group-hover:opacity-100 flex items-center justify-center gap-1.5 font-bold text-xs rounded-xl transition-opacity cursor-pointer"
+                              className="absolute inset-0 bg-black/40 text-white opacity-0 group-hover:opacity-100 flex items-center justify-center gap-1.5 font-bold text-xs rounded-xl transition-opacity cursor-pointer z-20"
                             >
                               <ZoomIn className="w-4 h-4" /> Full View
                             </button>
@@ -523,15 +690,19 @@ export const FlipBookReader: React.FC<FlipBookReaderProps> = ({
                         onOpenFullStudio={() => {
                           playChimeSound('magic');
                           onOpenColorStudio({
+                            pageId: page.id,
                             title: `Page ${page.pageNumber}: ${page.title}`,
                             pageNumber: page.pageNumber,
-                            imageUrl: page.imageUrl!,
+                            imageUrl: page.coloredImageUrl || page.imageUrl!,
                             storyCaption: page.storyCaption,
                             secondaryCaption: page.secondaryCaption,
-                            secondaryLanguage: page.secondaryLanguage,
+                            secondaryLanguage: page.secondaryLanguage || book.secondaryLanguage,
                             numberLegend: page.numberLegend,
-                            activityMode: page.activityMode,
+                            activityMode: page.activityMode || book.activityMode,
                             funFactOrTip: page.funFactOrTip,
+                            borderStyle: page.borderStyle || book.defaultBorderStyle || 'classic-double',
+                            placedStickers: page.placedStickers || [],
+                            voiceAudioUrl: page.voiceAudioUrl,
                             slideIndex: safeIndex,
                           });
                         }}
@@ -545,15 +716,19 @@ export const FlipBookReader: React.FC<FlipBookReaderProps> = ({
                         onClick={() => {
                           playChimeSound('magic');
                           onOpenColorStudio({
+                            pageId: page.id,
                             title: `Page ${page.pageNumber}: ${page.title}`,
                             pageNumber: page.pageNumber,
-                            imageUrl: page.imageUrl!,
+                            imageUrl: page.coloredImageUrl || page.imageUrl!,
                             storyCaption: page.storyCaption,
                             secondaryCaption: page.secondaryCaption,
-                            secondaryLanguage: page.secondaryLanguage,
+                            secondaryLanguage: page.secondaryLanguage || book.secondaryLanguage,
                             numberLegend: page.numberLegend,
-                            activityMode: page.activityMode,
+                            activityMode: page.activityMode || book.activityMode,
                             funFactOrTip: page.funFactOrTip,
+                            borderStyle: page.borderStyle || book.defaultBorderStyle || 'classic-double',
+                            placedStickers: page.placedStickers || [],
+                            voiceAudioUrl: page.voiceAudioUrl,
                             slideIndex: safeIndex,
                           });
                         }}
@@ -669,6 +844,19 @@ export const FlipBookReader: React.FC<FlipBookReaderProps> = ({
                         {speakingPageId === page.id ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
                       </button>
                     </div>
+
+                    {/* Read-Along Voice Narration Widget */}
+                    {onSaveVoiceAudio && (
+                      <div className="pt-0.5">
+                        <VoiceRecorderWidget
+                          pageNumber={page.pageNumber}
+                          initialAudioUrl={page.voiceAudioUrl}
+                          initialDuration={page.voiceAudioDuration}
+                          onSaveAudio={(audioUrl, dur) => onSaveVoiceAudio(page.id, audioUrl, dur)}
+                          onRemoveAudio={() => onSaveVoiceAudio(page.id, '', 0)}
+                        />
+                      </div>
+                    )}
 
                     {/* Secondary Bilingual Caption */}
                     {page.secondaryCaption && (
@@ -896,6 +1084,128 @@ export const FlipBookReader: React.FC<FlipBookReaderProps> = ({
           </motion.div>
         </AnimatePresence>
       </div>
+
+      {/* SECONDARY FILM STRIP NAVIGATION COMPONENT: THUMBNAIL PREVIEWS OF ALL BOOK PAGES */}
+      <nav
+        aria-label="Book Pages Filmstrip"
+        className="bg-white/95 backdrop-blur-md rounded-2xl border-2 border-amber-300/90 shadow-sm p-2.5 sm:p-3 space-y-2 select-none"
+      >
+        {/* Film Strip Header: Title, Count, and Scroll Controls */}
+        <div className="flex items-center justify-between px-1">
+          <div className="flex items-center gap-2">
+            <div className="p-1 rounded-lg bg-amber-500 text-white shadow-2xs">
+              <Film className="w-3.5 h-3.5" />
+            </div>
+            <span
+              className="font-black text-gray-900 text-xs flex items-center gap-1.5"
+              style={{ fontFamily: "'Fredoka', sans-serif" }}
+            >
+              <span>Film Strip Navigation</span>
+              <span className="px-2 py-0.2 rounded-full bg-amber-100 text-amber-900 text-[10px] font-bold">
+                {slides.length} Pages
+              </span>
+            </span>
+            <span className="hidden md:inline text-[11px] text-gray-500 font-medium">
+              • Quick jump between pages with instant thumbnail preview
+            </span>
+          </div>
+
+          <div className="flex items-center gap-1.5">
+            <span className="text-[11px] font-bold text-amber-800 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-lg hidden sm:inline">
+              Selected: {currentSlide.navLabel}
+            </span>
+            <button
+              type="button"
+              onClick={() => scrollFilmStrip('left')}
+              disabled={!canScrollStripLeft}
+              className="w-7 h-7 rounded-lg bg-gray-50 hover:bg-amber-100 text-gray-700 disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center transition-colors cursor-pointer border border-gray-200"
+              title="Scroll thumbnails left"
+            >
+              <ChevronLeft className="w-4 h-4" />
+            </button>
+            <button
+              type="button"
+              onClick={() => scrollFilmStrip('right')}
+              disabled={!canScrollStripRight}
+              className="w-7 h-7 rounded-lg bg-gray-50 hover:bg-amber-100 text-gray-700 disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center transition-colors cursor-pointer border border-gray-200"
+              title="Scroll thumbnails right"
+            >
+              <ChevronRight className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+
+        {/* Horizontal Film Strip Thumbnail Track */}
+        <div
+          ref={filmStripScrollRef}
+          onScroll={checkStripScroll}
+          className="w-full overflow-x-auto flex items-center gap-2 sm:gap-2.5 py-1 px-1 scroll-smooth"
+          style={{ scrollbarWidth: 'thin' }}
+        >
+          {slides.map((slide, sIdx) => {
+            const isActive = sIdx === safeIndex;
+            return (
+              <button
+                key={`film-${slide.id}`}
+                id={`reader-film-thumb-${sIdx}`}
+                type="button"
+                onClick={() => handleGoTo(sIdx)}
+                className={`group shrink-0 w-20 sm:w-24 h-26 sm:h-30 rounded-xl border-2 p-1.5 flex flex-col justify-between transition-all duration-200 cursor-pointer text-left relative ${
+                  isActive
+                    ? 'border-amber-500 bg-amber-50/95 ring-3 ring-amber-400 shadow-md scale-102 font-bold'
+                    : 'border-amber-200/80 bg-white hover:border-amber-400 hover:bg-amber-50/40 opacity-85 hover:opacity-100'
+                }`}
+                title={`Jump to ${slide.navLabel}: ${slide.title}`}
+              >
+                {/* Thumbnail Art Frame */}
+                <div className="w-full h-16 sm:h-19 bg-white rounded-lg border border-gray-100 flex items-center justify-center overflow-hidden relative shadow-2xs">
+                  {slide.imageUrl ? (
+                    <img
+                      src={slide.imageUrl}
+                      alt={slide.title}
+                      referrerPolicy="no-referrer"
+                      className="w-full h-full object-contain filter contrast-125 p-0.5 transition-transform duration-200 group-hover:scale-105"
+                      loading="lazy"
+                    />
+                  ) : (
+                    <div className="text-[10px] text-gray-400 font-bold flex flex-col items-center">
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin text-amber-500 mb-1" />
+                      <span>Art</span>
+                    </div>
+                  )}
+
+                  {/* Mode / Type Mini Chip */}
+                  <div className="absolute top-1 left-1">
+                    <span className="px-1 py-0.2 rounded text-[9px] font-black uppercase tracking-tight bg-gray-900/80 text-white">
+                      {slide.type === 'cover' ? 'Cover' : slide.type === 'stickers' ? 'Stickers' : `P${slide.pageNumber}`}
+                    </span>
+                  </div>
+
+                  {isActive && (
+                    <div className="absolute top-1 right-1 w-2.5 h-2.5 rounded-full bg-amber-500 ring-2 ring-white shadow-xs" />
+                  )}
+                </div>
+
+                {/* Thumbnail Label */}
+                <div className="pt-1 min-w-0">
+                  <div className="flex items-center justify-between text-[10px] font-extrabold text-gray-900 truncate">
+                    <span>{slide.navLabel}</span>
+                    {slide.activityMode === 'color-by-numbers' && (
+                      <span className="text-[9px] text-amber-700">🔢</span>
+                    )}
+                    {slide.activityMode === 'dot-to-dot' && (
+                      <span className="text-[9px] text-sky-700">✏️</span>
+                    )}
+                  </div>
+                  <p className="text-[9px] text-gray-500 truncate mt-0.2">
+                    {slide.title}
+                  </p>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      </nav>
 
       {/* Bottom Navigation Bar with Quick Slide Titles & Keyboard Tip */}
       <div className="bg-white rounded-2xl border-2 border-gray-900/80 p-3 sm:p-4 flex flex-col sm:flex-row items-center justify-between gap-3 shadow-xs">

@@ -156,6 +156,14 @@ export const BookForm: React.FC<BookFormProps> = ({
     setTheme(presetTheme);
   };
 
+  const handleSelectStarterTheme = (item: (typeof POPULAR_THEMES)[0]) => {
+    setTheme(item.theme);
+    if (item.suggestedTitle) {
+      setCustomTitle(item.suggestedTitle);
+    }
+    playChimeSound('sparkle');
+  };
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!theme.trim() || !childName.trim() || isGenerating) return;
@@ -513,6 +521,67 @@ export const BookForm: React.FC<BookFormProps> = ({
           </span>
         </div>
 
+        {/* 1-Click Starter Themes Gallery (Instant inspiration) */}
+        <div className="pt-2 pb-1 space-y-2.5" id="starter-themes-gallery">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+            <div className="flex items-center gap-2">
+              <span className="text-base select-none">🎨</span>
+              <label className="text-xs font-bold uppercase tracking-wider text-gray-700">
+                1-Click Starter Themes
+              </label>
+              <span className="text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300 px-2 py-0.5 rounded-full">
+                Tap to Auto-Fill
+              </span>
+            </div>
+            <span className="text-[11px] text-gray-500">
+              Pick a theme to instantly set adventure &amp; title
+            </span>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+            {POPULAR_THEMES.map((item) => {
+              const isSelected = theme.trim().toLowerCase() === item.theme.toLowerCase();
+              return (
+                <button
+                  key={item.theme}
+                  type="button"
+                  onClick={() => handleSelectStarterTheme(item)}
+                  className={`p-3 rounded-2xl border text-left transition-all cursor-pointer flex flex-col justify-between group relative ${
+                    isSelected
+                      ? 'bg-amber-100/90 border-amber-500 ring-2 ring-amber-400/80 shadow-xs scale-101'
+                      : 'bg-white hover:bg-amber-50/70 border-gray-200/90 hover:border-amber-300 shadow-2xs hover:shadow-xs'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-1 mb-2">
+                    <span className="text-2xl select-none group-hover:scale-115 transition-transform">
+                      {item.emoji}
+                    </span>
+                    <span
+                      className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-md ${
+                        isSelected
+                          ? 'bg-amber-600 text-white shadow-2xs'
+                          : 'bg-gray-100 text-gray-600 group-hover:bg-amber-100 group-hover:text-amber-900'
+                      }`}
+                    >
+                      {item.tag}
+                    </span>
+                  </div>
+
+                  <div>
+                    <div className="font-bold text-xs text-gray-900 group-hover:text-amber-950 flex items-center justify-between gap-1">
+                      <span className="truncate">{item.theme}</span>
+                      {isSelected && <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" />}
+                    </div>
+                    <p className="text-[10px] text-gray-500 leading-snug line-clamp-1 mt-0.5">
+                      {item.desc}
+                    </p>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
         {/* Primary Row 2: Theme Selection with Kid Magic Builder Tab */}
         <div className="space-y-3 pt-1">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-1">
@@ -607,12 +676,11 @@ export const BookForm: React.FC<BookFormProps> = ({
                     className="w-full px-3.5 py-2.5 rounded-xl border border-gray-300 focus:border-amber-500 focus:ring-3 focus:ring-amber-200/50 text-sm font-semibold text-gray-900 bg-white cursor-pointer outline-hidden transition-all"
                   >
                     <option value="custom">✏️ Custom Theme (Type below)</option>
-                    <option value="Jungle Animals">🦁 Jungle Animals</option>
-                    <option value="Magical Unicorns">🦄 Magical Unicorns</option>
-                    <option value="Fast Cars">🏎️ Fast Cars</option>
-                    <option value="Under the Sea">🐠 Under the Sea</option>
-                    <option value="Friendly Monsters">👾 Friendly Monsters</option>
-                    <option value="Space Dinosaurs">🚀 Space Dinosaurs</option>
+                    {POPULAR_THEMES.map((pt) => (
+                      <option key={pt.theme} value={pt.theme}>
+                        {pt.emoji} {pt.theme}
+                      </option>
+                    ))}
                   </select>
                   <span className="text-[11px] text-gray-500 mt-1 block">
                     Select a popular theme or write your own

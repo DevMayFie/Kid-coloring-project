@@ -6,9 +6,15 @@ import { HistorySection } from './components/HistorySection';
 import { RestoreSessionBanner } from './components/RestoreSessionBanner';
 import { ChatDrawer } from './components/ChatDrawer';
 import { PdfExportModal } from './components/PdfExportModal';
+import { PrintPreviewModal } from './components/PrintPreviewModal';
 import { PageEditorModal } from './components/PageEditorModal';
+import { PageReorderModal } from './components/PageReorderModal';
 import { Tooltip } from './components/Tooltip';
 import { ProgressRing } from './components/ProgressRing';
+import { BatchRegenerateModal } from './components/BatchRegenerateModal';
+import { BrandIntegrationModal } from './components/BrandIntegrationModal';
+import { WebsiteIntegrationsModal } from './components/WebsiteIntegrationsModal';
+import { BonusActivitiesModal } from './components/BonusActivitiesModal';
 import {
   ColoringBook,
   ColoringPage,
@@ -19,8 +25,12 @@ import {
   ActivityMode,
   BookLanguage,
   NumberLegendItem,
+  PageBorderStyle,
+  PlacedSticker,
+  BrandIntegration,
 } from './types';
 import { DEFAULT_COLORING_BOOK, createSampleLineArtSvg, createSampleStickersSvg } from './utils/sampleData';
+import { createThematicCoverSvg, buildThematicCoverAiPrompt } from './utils/coverIllustrationGenerator';
 import { generateColoringBookPdf } from './utils/pdfGenerator';
 import { playChimeSound } from './utils/kidAudio';
 import {
@@ -55,6 +65,19 @@ export default function App() {
   // Modals & Drawers
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [isPdfModalOpen, setIsPdfModalOpen] = useState(false);
+  const [isPrintPreviewOpen, setIsPrintPreviewOpen] = useState(false);
+  const [isPageReorderOpen, setIsPageReorderOpen] = useState(false);
+  const [isBatchModalOpen, setIsBatchModalOpen] = useState(false);
+  const [isBrandModalOpen, setIsBrandModalOpen] = useState(false);
+  const [isWebsiteModalOpen, setIsWebsiteModalOpen] = useState(false);
+  const [isActivitiesModalOpen, setIsActivitiesModalOpen] = useState(false);
+  const [isBatchGenerating, setIsBatchGenerating] = useState(false);
+  const [batchProgress, setBatchProgress] = useState<{
+    current: number;
+    total: number;
+    pageTitle: string;
+    percent: number;
+  } | null>(null);
   const [editingPage, setEditingPage] = useState<ColoringPage | null>(null);
   const [isRegeneratingSingle, setIsRegeneratingSingle] = useState(false);
   const [isPreparingBottomPdf, setIsPreparingBottomPdf] = useState(false);
@@ -228,12 +251,11 @@ export default function App() {
           });
         }
 
-        const coverPromptPrefix =
-          targetDifficulty === 'toddler'
-            ? "Toddler coloring book cover, simple thick lines for toddlers, ultra-bold heavy black outlines, giant open shapes, pure white background"
-            : targetDifficulty === 'intricate'
-            ? "Intricate coloring book cover for older children, intricate patterns for older children, detailed crisp black line art, decorative zentangles, pure white background"
-            : "Children's coloring book cover, bold thick black outlines, pure white background";
+        const coverPrompt = buildThematicCoverAiPrompt(
+          options.theme,
+          options.childName,
+          targetDifficulty
+        );
 
         planData = {
           bookTitle: explicitTitle || `${options.childName}'s ${options.theme} Adventure`,
@@ -241,7 +263,7 @@ export default function App() {
           dedication: cleanAuthor
             ? `Created with love especially for ${options.childName} from ${cleanAuthor} • Happy Coloring!`
             : `Created with love especially for ${options.childName} • Happy Coloring!`,
-          coverPrompt: `${coverPromptPrefix}, cute ${options.theme} character smiling with decorative stars`,
+          coverPrompt,
           pages: fallbackPages,
         };
       } else if (explicitTitle) {
@@ -293,16 +315,18 @@ export default function App() {
 
       setBook(newBook);
 
-      // Step 2: Generate Cover Art
+      // Step 2: Generate Thematic Cover Art
       setGenerationStep(2);
-      setGenerationProgressText(`Drawing custom cover in ${options.resolution} (${difficultyLabel}) using Gemini 3 Pro...`);
+      setGenerationProgressText(`Drawing custom thematic cover for ${options.childName} in ${options.resolution} (${difficultyLabel}) using Gemini 3 Pro...`);
 
       let coverUrl = '';
       try {
-        const coverRes = await fetch('/api/generate-image', {
+        const coverRes = await fetch('/api/generate-cover', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
+            theme: options.theme,
+            childName: options.childName,
             prompt: planData.coverPrompt,
             imageSize: options.resolution,
             aspectRatio: options.aspectRatio,
@@ -314,11 +338,11 @@ export default function App() {
           coverUrl = coverData.imageUrl;
         }
       } catch (err) {
-        console.warn('Cover image API failed, using vector SVG fallback:', err);
+        console.warn('Cover image API failed, using thematic vector SVG fallback:', err);
       }
 
       if (!coverUrl) {
-        coverUrl = createSampleLineArtSvg('space_dino_1', `${options.childName.toUpperCase()}'S COVER`);
+        coverUrl = createThematicCoverSvg(options.theme, options.childName, targetDifficulty);
       }
 
       setBook((prev) => ({
@@ -447,14 +471,30 @@ export default function App() {
   };
 
   // Regenerate Cover
-  const handleRegenerateCover = async () => {
+  const handleRegenerateCover = async (forceVectorStyle = false) => {
     setBook((prev) => ({ ...prev, coverStatus: 'generating' }));
     try {
-      const res = await fetch('/api/generate-image', {
+      if (forceVectorStyle) {
+        const newCoverUrl = createThematicCoverSvg(
+          book.theme,
+          book.childName,
+          book.difficulty || 'standard'
+        );
+        setBook((prev) => ({
+          ...prev,
+          coverImageUrl: newCoverUrl,
+          coverStatus: 'completed',
+        }));
+        return;
+      }
+
+      const res = await fetch('/api/generate-cover', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          prompt: book.coverPrompt || `Children's coloring book cover of ${book.theme}`,
+          theme: book.theme,
+          childName: book.childName,
+          prompt: book.coverPrompt || buildThematicCoverAiPrompt(book.theme, book.childName, book.difficulty || 'standard'),
           imageSize: book.resolution,
           aspectRatio: book.aspectRatio,
           difficulty: book.difficulty || 'standard',
@@ -465,7 +505,7 @@ export default function App() {
       if (data.success && data.imageUrl) {
         newCoverUrl = data.imageUrl;
       } else {
-        newCoverUrl = createSampleLineArtSvg('space_dino_1', `${book.childName.toUpperCase()}'S COVER`);
+        newCoverUrl = createThematicCoverSvg(book.theme, book.childName, book.difficulty || 'standard');
       }
 
       setBook((prev) => ({
@@ -474,12 +514,14 @@ export default function App() {
         coverStatus: 'completed',
       }));
     } catch (e) {
-      setBook((prev) => ({ ...prev, coverStatus: 'completed' }));
+      const fallbackUrl = createThematicCoverSvg(book.theme, book.childName, book.difficulty || 'standard');
+      setBook((prev) => ({ ...prev, coverImageUrl: fallbackUrl, coverStatus: 'completed' }));
     }
   };
 
   // Print single page
   const handlePrintSinglePage = async (page: ColoringPage) => {
+    playChimeSound('sparkle');
     const singlePageBook: ColoringBook = {
       ...book,
       pages: [page],
@@ -494,12 +536,312 @@ export default function App() {
 
       const blob = doc.output('blob');
       const blobUrl = URL.createObjectURL(blob);
-      const printWindow = window.open(blobUrl, '_blank');
-      if (printWindow) {
-        printWindow.focus();
+
+      // Try invisible iframe print first to bypass iframe popup blocking
+      try {
+        let printFrame = document.getElementById('single-page-print-iframe') as HTMLIFrameElement;
+        if (printFrame) {
+          printFrame.remove();
+        }
+        printFrame = document.createElement('iframe');
+        printFrame.id = 'single-page-print-iframe';
+        printFrame.style.position = 'fixed';
+        printFrame.style.right = '0';
+        printFrame.style.bottom = '0';
+        printFrame.style.width = '0';
+        printFrame.style.height = '0';
+        printFrame.style.border = '0';
+        printFrame.src = blobUrl;
+        document.body.appendChild(printFrame);
+        printFrame.onload = () => {
+          try {
+            printFrame.contentWindow?.focus();
+            printFrame.contentWindow?.print();
+          } catch (e) {
+            const printWindow = window.open(blobUrl, '_blank');
+            if (printWindow) printWindow.focus();
+          }
+        };
+      } catch (e) {
+        const printWindow = window.open(blobUrl, '_blank');
+        if (printWindow) printWindow.focus();
       }
     } catch (err) {
       console.error('Error printing single page:', err);
+    }
+  };
+
+  // Update border for a single page
+  const handleUpdatePageBorder = (pageId: string, borderStyle: PageBorderStyle) => {
+    setBook((prev) => ({
+      ...prev,
+      pages: prev.pages.map((p) => (p.id === pageId ? { ...p, borderStyle } : p)),
+    }));
+    playChimeSound('sparkle');
+  };
+
+  // Update border for all pages in book
+  const handleUpdateAllBorders = (borderStyle: PageBorderStyle) => {
+    setBook((prev) => ({
+      ...prev,
+      defaultBorderStyle: borderStyle,
+      pages: prev.pages.map((p) => ({ ...p, borderStyle })),
+    }));
+    playChimeSound('sparkle');
+  };
+
+  // Save colored artwork and placed digital stickers to page
+  const handleSavePageArtwork = (
+    pageId: string,
+    coloredDataUrl: string,
+    stickers: PlacedSticker[],
+    borderStyle?: PageBorderStyle
+  ) => {
+    if (pageId === 'cover') {
+      setBook((prev) => ({
+        ...prev,
+        coverImageUrl: coloredDataUrl,
+      }));
+    } else if (pageId === 'stickers') {
+      setBook((prev) => ({
+        ...prev,
+        stickerSheet: prev.stickerSheet
+          ? { ...prev.stickerSheet, imageUrl: coloredDataUrl }
+          : undefined,
+      }));
+    } else {
+      setBook((prev) => ({
+        ...prev,
+        pages: prev.pages.map((p) =>
+          p.id === pageId
+            ? {
+                ...p,
+                coloredImageUrl: coloredDataUrl,
+                placedStickers: stickers,
+                borderStyle: borderStyle || p.borderStyle,
+              }
+            : p
+        ),
+      }));
+    }
+    playChimeSound('fanfare');
+    confetti({
+      particleCount: 75,
+      spread: 60,
+      origin: { y: 0.6 },
+    });
+  };
+
+  // Save voice recording for a page
+  const handleSaveVoiceAudio = (pageId: string, audioUrl: string, duration: number) => {
+    setBook((prev) => ({
+      ...prev,
+      pages: prev.pages.map((p) =>
+        p.id === pageId
+          ? {
+              ...p,
+              voiceAudioUrl: audioUrl,
+              voiceAudioDuration: duration,
+            }
+          : p
+      ),
+    }));
+    playChimeSound('pop');
+  };
+
+  // Add personalized hero photo-to-line-art page or cover
+  const handleAddHeroPage = (heroData: { imageUrl: string; title: string; caption: string; asCover?: boolean }) => {
+    if (heroData.asCover) {
+      setBook((prev) => ({
+        ...prev,
+        coverImageUrl: heroData.imageUrl,
+        coverStatus: 'completed',
+        subtitle: heroData.caption,
+      }));
+    } else {
+      const newPage: ColoringPage = {
+        id: `page-hero-${Date.now()}`,
+        pageNumber: book.pages.length + 1,
+        title: heroData.title,
+        storyCaption: heroData.caption,
+        prompt: `Custom photo outline coloring page for ${book.childName}`,
+        imageUrl: heroData.imageUrl,
+        status: 'completed',
+        funFactOrTip: `Starring ${book.childName}! Color the outlines with your favorite crayons.`,
+        borderStyle: book.defaultBorderStyle || 'classic-double',
+      };
+      setBook((prev) => ({
+        ...prev,
+        pages: [...prev.pages, newPage],
+      }));
+    }
+    playChimeSound('fanfare');
+    confetti({
+      particleCount: 80,
+      spread: 70,
+      origin: { y: 0.6 },
+    });
+  };
+
+  // Toggle QR code printing
+  const handleToggleQrCode = (enabled: boolean) => {
+    setBook((prev) => ({
+      ...prev,
+      includeQrCode: enabled,
+    }));
+    playChimeSound('pop');
+  };
+
+  // Update certificate details
+  const handleUpdateCertificate = (details: { recipientName: string; awardDate: string; presenter?: string }) => {
+    setBook((prev) => ({
+      ...prev,
+      certificate: details,
+    }));
+    playChimeSound('sparkle');
+  };
+
+  // Reorder story pages sequence
+  const handleReorderPages = (reorderedPages: ColoringPage[]) => {
+    const updatedPages = reorderedPages.map((page, idx) => ({
+      ...page,
+      pageNumber: idx + 1,
+    }));
+    setBook((prev) => ({
+      ...prev,
+      pages: updatedPages,
+    }));
+    playChimeSound('fanfare');
+    try {
+      confetti({
+        particleCount: 60,
+        spread: 60,
+        origin: { y: 0.6 },
+      });
+    } catch (e) {}
+  };
+
+  // Batch regenerate all pages in book with single click
+  const handleBatchRegenerateAll = async (newTheme?: string, refreshPlan: boolean = true) => {
+    const targetTheme = newTheme?.trim() || book.theme;
+    setIsBatchGenerating(true);
+    const total = book.pages.length;
+
+    try {
+      let pagePrompts = book.pages.map((p) => p.prompt);
+      let pageTitles = book.pages.map((p) => p.title);
+
+      // If new theme is provided and refreshPlan is true, request new storyboard scene plan
+      if (refreshPlan && targetTheme !== book.theme) {
+        setBatchProgress({
+          current: 0,
+          total,
+          pageTitle: `Writing new "${targetTheme}" adventure story...`,
+          percent: 5,
+        });
+
+        try {
+          const planRes = await fetch('/api/generate-plan', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              theme: targetTheme,
+              childName: book.childName,
+              pageCount: total,
+              difficulty: book.difficulty || 'standard',
+              activityMode: book.activityMode || 'standard',
+              language: book.language || 'en',
+              secondaryLanguage: book.secondaryLanguage,
+            }),
+          });
+          const planData = await planRes.json();
+          if (planData.success && Array.isArray(planData.pages)) {
+            pagePrompts = planData.pages.map((p: any) => p.imagePrompt);
+            pageTitles = planData.pages.map((p: any) => p.sceneTitle);
+
+            setBook((prev) => ({
+              ...prev,
+              theme: targetTheme,
+              title: planData.bookTitle || `${prev.childName}'s ${targetTheme} Coloring Book`,
+              subtitle: planData.subtitle || prev.subtitle,
+              coverPrompt: planData.coverPrompt || prev.coverPrompt,
+              pages: prev.pages.map((p, idx) => ({
+                ...p,
+                title: planData.pages[idx]?.sceneTitle || p.title,
+                storyCaption: planData.pages[idx]?.storyCaption || p.storyCaption,
+                secondaryCaption: planData.pages[idx]?.secondaryCaption || p.secondaryCaption,
+                prompt: planData.pages[idx]?.imagePrompt || p.prompt,
+                status: 'generating',
+              })),
+            }));
+          }
+        } catch (planErr) {
+          console.warn('Batch plan refresh failed, using existing outline prompts:', planErr);
+        }
+      }
+
+      // Sequentially regenerate each page
+      for (let i = 0; i < total; i++) {
+        const page = book.pages[i];
+        const title = pageTitles[i] || page.title;
+        const prompt = pagePrompts[i] || page.prompt;
+
+        setBatchProgress({
+          current: i + 1,
+          total,
+          pageTitle: `Page ${i + 1}: ${title}`,
+          percent: Math.round(((i + 1) / total) * 100),
+        });
+
+        setBook((prev) => ({
+          ...prev,
+          pages: prev.pages.map((p, idx) => (idx === i ? { ...p, status: 'generating' } : p)),
+        }));
+
+        let newUrl = '';
+        try {
+          const res = await fetch('/api/generate-image', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              prompt,
+              imageSize: page.resolution || book.resolution,
+              aspectRatio: book.aspectRatio,
+              difficulty: book.difficulty || 'standard',
+            }),
+          });
+          const data = await res.json();
+          if (data.success && data.imageUrl) {
+            newUrl = data.imageUrl;
+          }
+        } catch (err) {
+          console.warn('Batch regen image API error, using fallback:', err);
+        }
+
+        if (!newUrl) {
+          newUrl = createSampleLineArtSvg('space_dino_2', `PAGE ${i + 1}`);
+        }
+
+        setBook((prev) => ({
+          ...prev,
+          pages: prev.pages.map((p, idx) =>
+            idx === i ? { ...p, imageUrl: newUrl, status: 'completed' } : p
+          ),
+        }));
+      }
+
+      playChimeSound('fanfare');
+      confetti({
+        particleCount: 120,
+        spread: 80,
+        origin: { y: 0.5 },
+      });
+      setIsBatchModalOpen(false);
+    } catch (err) {
+      console.error('Batch regen failed:', err);
+    } finally {
+      setIsBatchGenerating(false);
+      setBatchProgress(null);
     }
   };
 
@@ -621,6 +963,19 @@ export default function App() {
     });
   };
 
+  // Save custom brand and logo integration settings
+  const handleSaveBrandIntegration = (brand: BrandIntegration) => {
+    setBook((prev) => ({
+      ...prev,
+      brandIntegration: brand,
+    }));
+    setIsBrandModalOpen(false);
+    playChimeSound('fanfare');
+    try {
+      confetti({ particleCount: 60, spread: 70, origin: { y: 0.5 } });
+    } catch (e) {}
+  };
+
   // Restore session from localStorage
   const handleRestoreLastSession = () => {
     if (!autosavedSession || !autosavedSession.book) return;
@@ -676,6 +1031,12 @@ export default function App() {
         onOpenChat={() => setIsChatOpen(true)}
         onDownloadPdf={() => setIsPdfModalOpen(true)}
         onDirectPrint={() => setIsPdfModalOpen(true)}
+        onOpenPrintPreview={() => setIsPrintPreviewOpen(true)}
+        onOpenBrandModal={() => setIsBrandModalOpen(true)}
+        onOpenWebsiteModal={() => setIsWebsiteModalOpen(true)}
+        onOpenActivitiesModal={() => setIsActivitiesModalOpen(true)}
+        brandIntegration={book.brandIntegration}
+        hasCustomBrand={Boolean(book.brandIntegration?.enabled)}
         isGeneratingPdf={false}
         pageCount={book.pages.length}
         historyCount={historyBooks.length}
@@ -752,6 +1113,16 @@ export default function App() {
           onPrintSinglePage={handlePrintSinglePage}
           onPrintStickerSheet={handlePrintStickerSheet}
           onLoadFavorite={handleLoadFavorite}
+          onOpenPrintPreview={() => setIsPrintPreviewOpen(true)}
+          onOpenPageReorder={() => setIsPageReorderOpen(true)}
+          onOpenBatchRegenerate={() => setIsBatchModalOpen(true)}
+          onUpdatePageBorder={handleUpdatePageBorder}
+          onUpdateAllBorders={handleUpdateAllBorders}
+          onSavePageArtwork={handleSavePageArtwork}
+          onSaveVoiceAudio={handleSaveVoiceAudio}
+          onAddHeroPage={handleAddHeroPage}
+          onToggleQrCode={handleToggleQrCode}
+          onUpdateCertificate={handleUpdateCertificate}
           onDownloadPdf={() => {
             setIsPdfBtnTooltipVisible(false);
             if (isPreparingBottomPdf) return;
@@ -775,6 +1146,9 @@ export default function App() {
           setIsPdfBtnTooltipVisible={setIsPdfBtnTooltipVisible}
           isBookGenerationFinished={isBookGenerationFinished}
           isGeneratingBook={isGeneratingBook}
+          onOpenBrandModal={() => setIsBrandModalOpen(true)}
+          onOpenWebsiteModal={() => setIsWebsiteModalOpen(true)}
+          onOpenActivitiesModal={() => setIsActivitiesModalOpen(true)}
         />
       </main>
 
@@ -792,6 +1166,61 @@ export default function App() {
         isOpen={isPdfModalOpen}
         onClose={() => setIsPdfModalOpen(false)}
         book={book}
+        onOpenPrintPreview={() => setIsPrintPreviewOpen(true)}
+      />
+
+      {/* Full-Screen PDF Print Preview Modal */}
+      <PrintPreviewModal
+        isOpen={isPrintPreviewOpen}
+        onClose={() => setIsPrintPreviewOpen(false)}
+        book={book}
+      />
+
+      {/* Brand & Organization Logo Integration Modal */}
+      <BrandIntegrationModal
+        isOpen={isBrandModalOpen}
+        onClose={() => setIsBrandModalOpen(false)}
+        brand={book.brandIntegration}
+        onSave={handleSaveBrandIntegration}
+      />
+
+      {/* Website Integrations, Embed & Badges Modal */}
+      <WebsiteIntegrationsModal
+        isOpen={isWebsiteModalOpen}
+        onClose={() => setIsWebsiteModalOpen(false)}
+        book={book}
+      />
+
+      {/* Bonus Activities & Crafts Center Modal */}
+      <BonusActivitiesModal
+        isOpen={isActivitiesModalOpen}
+        onClose={() => setIsActivitiesModalOpen(false)}
+        book={book}
+      />
+
+      {/* Drag-and-Drop Page Story Arranger Modal */}
+      <PageReorderModal
+        isOpen={isPageReorderOpen}
+        onClose={() => setIsPageReorderOpen(false)}
+        pages={book.pages}
+        childName={book.childName}
+        onSaveOrder={handleReorderPages}
+      />
+
+      {/* 1-Click Batch Regenerate All Pages Modal */}
+      <BatchRegenerateModal
+        isOpen={isBatchModalOpen}
+        onClose={() => {
+          if (!isBatchGenerating) {
+            setIsBatchModalOpen(false);
+          }
+        }}
+        currentTheme={book.theme}
+        childName={book.childName}
+        totalPages={book.pages.length}
+        isGenerating={isBatchGenerating}
+        progress={batchProgress}
+        onBatchRegenerate={handleBatchRegenerateAll}
       />
 
       {/* Page Prompt / Details Editor Modal */}

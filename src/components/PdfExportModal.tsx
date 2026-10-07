@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, Download, Printer, Check, FileText, Sparkles, BookOpen, Layers } from 'lucide-react';
+import { X, Download, Printer, Check, FileText, Sparkles, BookOpen, Layers, Eye } from 'lucide-react';
 import { ColoringBook } from '../types';
 import { generateColoringBookPdf, GeneratePdfOptions } from '../utils/pdfGenerator';
 import confetti from 'canvas-confetti';
@@ -8,21 +8,22 @@ interface PdfExportModalProps {
   isOpen: boolean;
   onClose: () => void;
   book: ColoringBook;
+  onOpenPrintPreview?: () => void;
 }
 
 export const PdfExportModal: React.FC<PdfExportModalProps> = ({
   isOpen,
   onClose,
   book,
+  onOpenPrintPreview,
 }) => {
-  if (!isOpen) return null;
-
   const [paperSize, setPaperSize] = useState<'letter' | 'a4'>('letter');
   const [includeCover, setIncludeCover] = useState(true);
   const [includeDedicationPage, setIncludeDedicationPage] = useState(true);
   const [includeCertificate, setIncludeCertificate] = useState(true);
   const [includeCaptions, setIncludeCaptions] = useState(true);
   const [includeStickers, setIncludeStickers] = useState(true);
+  const [includeBonusActivities, setIncludeBonusActivities] = useState(true);
   const [isProcessing, setIsProcessing] = useState(false);
   const [progressPercent, setProgressPercent] = useState(0);
   const [statusText, setStatusText] = useState('');
@@ -31,6 +32,7 @@ export const PdfExportModal: React.FC<PdfExportModalProps> = ({
     (includeCover ? 1 : 0) +
     (includeDedicationPage ? 1 : 0) +
     book.pages.length +
+    (includeBonusActivities ? 2 : 0) +
     (includeCertificate ? 1 : 0) +
     (includeStickers && book.stickerSheet?.imageUrl ? 1 : 0);
 
@@ -59,6 +61,7 @@ export const PdfExportModal: React.FC<PdfExportModalProps> = ({
         includeCertificate,
         includeStickers,
         includeCaptions,
+        includeBonusActivities,
         onProgress: (percent, text) => {
           setProgressPercent(percent);
           setStatusText(text);
@@ -95,6 +98,7 @@ export const PdfExportModal: React.FC<PdfExportModalProps> = ({
         includeCertificate,
         includeStickers,
         includeCaptions,
+        includeBonusActivities,
         onProgress: (percent, text) => {
           setProgressPercent(percent);
           setStatusText(text);
@@ -118,6 +122,8 @@ export const PdfExportModal: React.FC<PdfExportModalProps> = ({
       setIsProcessing(false);
     }
   };
+
+  if (!isOpen) return null;
 
   return (
     <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
@@ -233,6 +239,18 @@ export const PdfExportModal: React.FC<PdfExportModalProps> = ({
               </span>
             </label>
 
+            <label className="flex items-center gap-2.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={includeBonusActivities}
+                onChange={(e) => setIncludeBonusActivities(e.target.checked)}
+                className="w-4 h-4 rounded-sm text-amber-600 focus:ring-amber-500 border-gray-300"
+              />
+              <span className="text-xs font-semibold text-gray-800">
+                Include Bonus Activities (Themed Maze Adventure &amp; DIY Cut-Out Bookmarks)
+              </span>
+            </label>
+
             {book.stickerSheet?.imageUrl && (
               <label className="flex items-center gap-2.5 cursor-pointer">
                 <input
@@ -274,6 +292,21 @@ export const PdfExportModal: React.FC<PdfExportModalProps> = ({
                 ></div>
               </div>
             </div>
+          )}
+
+          {/* Full-Screen Print Preview Trigger */}
+          {onOpenPrintPreview && (
+            <button
+              type="button"
+              onClick={() => {
+                onClose();
+                onOpenPrintPreview();
+              }}
+              className="w-full py-2.5 px-4 rounded-xl bg-amber-50 hover:bg-amber-100 text-amber-900 border-2 border-amber-300 font-bold text-xs flex items-center justify-center gap-2 transition-all cursor-pointer shadow-2xs"
+            >
+              <Eye className="w-4 h-4 text-amber-700" />
+              <span>Full-Screen Print Preview (Inspect All Sheets Before Printing)</span>
+            </button>
           )}
 
           {/* Actions */}

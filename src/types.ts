@@ -8,6 +8,30 @@ export type ActivityMode = 'standard' | 'color-by-numbers' | 'dot-to-dot';
 
 export type BookLanguage = 'en' | 'es' | 'fr' | 'de' | 'it' | 'pt' | 'ja';
 
+export type PrintLayoutMode = 'standard' | 'booklet';
+
+export type PageBorderStyle =
+  | 'none'
+  | 'classic-double'
+  | 'stars-sparkles'
+  | 'scalloped-dots'
+  | 'jungle-vines'
+  | 'space-constellation'
+  | 'hearts-ribbons'
+  | 'zigzag-fun';
+
+export interface PlacedSticker {
+  id: string;
+  stickerId: string;
+  emoji: string;
+  label: string;
+  svgDataUri?: string;
+  x: number; // percentage 0-100 across canvas width
+  y: number; // percentage 0-100 across canvas height
+  scale: number; // 0.5 to 2.5
+  rotation: number; // degrees -180 to 180
+}
+
 export interface NumberLegendItem {
   number: number;
   colorName: string;
@@ -18,6 +42,12 @@ export type ChatModel =
   | 'gemini-3.1-pro-preview'
   | 'gemini-3.5-flash'
   | 'gemini-3.1-flash-lite';
+
+export interface DotNode {
+  x: number; // percentage 0-100
+  y: number; // percentage 0-100
+  num: number;
+}
 
 export interface ColoringPage {
   id: string;
@@ -34,6 +64,15 @@ export interface ColoringPage {
   resolution?: ImageResolution;
   activityMode?: ActivityMode;
   numberLegend?: NumberLegendItem[];
+  borderStyle?: PageBorderStyle;
+  placedStickers?: PlacedSticker[];
+  coloredImageUrl?: string;
+  voiceAudioUrl?: string;
+  voiceAudioDuration?: number;
+  dotToDotPoints?: DotNode[];
+  isHeroPage?: boolean;
+  heroPhotoUrl?: string;
+  isDrawYourEndingPage?: boolean;
 }
 
 export interface StickerSheet {
@@ -42,6 +81,18 @@ export interface StickerSheet {
   imageUrl?: string;
   status: 'pending' | 'generating' | 'completed' | 'error';
   prompt?: string;
+}
+
+export interface BrandIntegration {
+  enabled: boolean;
+  organizationName: string;
+  websiteUrl: string;
+  tagline?: string;
+  logoUrl?: string;
+  logoPreset?: 'crayon-mascot' | 'school-crest' | 'art-palette' | 'star-rocket' | 'party-balloon' | 'custom';
+  showOnCover: boolean;
+  showOnPageFooter: boolean;
+  showWebsiteQrCode: boolean;
 }
 
 export interface FavoriteBook {
@@ -63,6 +114,20 @@ export interface FavoriteBook {
   coverImageUrl?: string;
   pages: ColoringPage[];
   stickerSheet?: StickerSheet;
+  defaultBorderStyle?: PageBorderStyle;
+  includeCertificate?: boolean;
+  certificateDetails?: {
+    recipientName: string;
+    awardDate: string;
+    presenter?: string;
+  };
+  includeQrCode?: boolean;
+  includeDrawYourEnding?: boolean;
+  includeCrayonSwatches?: boolean;
+  printLayout?: PrintLayoutMode;
+  heroPhotoUrl?: string;
+  heroSubjectType?: 'child' | 'pet' | 'toy' | 'custom';
+  brandIntegration?: BrandIntegration;
 }
 
 export interface ColoringBook {
@@ -84,6 +149,20 @@ export interface ColoringBook {
   coverPrompt?: string;
   pages: ColoringPage[];
   stickerSheet?: StickerSheet;
+  defaultBorderStyle?: PageBorderStyle;
+  includeCertificate?: boolean;
+  certificateDetails?: {
+    recipientName: string;
+    awardDate: string;
+    presenter?: string;
+  };
+  includeQrCode?: boolean;
+  includeDrawYourEnding?: boolean;
+  includeCrayonSwatches?: boolean;
+  printLayout?: PrintLayoutMode;
+  heroPhotoUrl?: string;
+  heroSubjectType?: 'child' | 'pet' | 'toy' | 'custom';
+  brandIntegration?: BrandIntegration;
   createdAt: number;
 }
 

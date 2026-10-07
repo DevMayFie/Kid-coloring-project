@@ -3,6 +3,11 @@ import path from 'path';
 import dotenv from 'dotenv';
 import { GoogleGenAI, Type } from '@google/genai';
 import { createServer as createViteServer } from 'vite';
+import {
+  createThematicCoverSvg,
+  buildThematicCoverAiPrompt,
+  detectThemeCategory,
+} from './src/utils/coverIllustrationGenerator';
 
 dotenv.config();
 
@@ -119,53 +124,65 @@ CRITICAL RULES:
    - storyCaption (1-2 sentences of fun kid-friendly story text, rhyming or cheerful)
    - funFactOrTip (a creative suggestion for coloring, such as "Make the rocket fiery red!" or an entertaining kid-friendly fun fact)
    - imagePrompt: Very detailed prompt engineered for black-and-white coloring book pages matching the difficulty level (${difficulty}) and activity mode (${activityMode}). It MUST strictly follow the directives above and specify pure white background, no shading, no grayscale, no color fills.
-5. Also provide a coverPrompt for the cover page illustration adhering to the ${difficulty} difficulty style.`;
+5. Provide 'coverPrompt': Specifically design a simple, charming thematic children's coloring book COVER illustration based on the theme "${theme}" to accompany the child's name "${childName}". It must feature a delightful, simple central thematic character or mascot (for example, if space dinosaurs: a cute cartoon dinosaur in a bubble astronaut helmet floating in space beside a Saturn-ringed planet and smiling stars; for unicorns: a happy unicorn with a spiral horn, rainbow, and star sparkles). It MUST specify pure white background, thick bold black outlines, zero shading, no grayscale, no textures, and an open celebratory composition with framing space or a decorative banner ribbon for "${childName}".`;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.5-flash',
-      contents: prompt,
-      config: {
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            bookTitle: { type: Type.STRING },
-            subtitle: { type: Type.STRING },
-            dedication: { type: Type.STRING },
-            secondaryTitle: { type: Type.STRING },
-            coverPrompt: { type: Type.STRING },
-            pages: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  pageNumber: { type: Type.INTEGER },
-                  sceneTitle: { type: Type.STRING },
-                  storyCaption: { type: Type.STRING },
-                  secondaryCaption: { type: Type.STRING },
-                  funFactOrTip: { type: Type.STRING },
-                  imagePrompt: { type: Type.STRING },
-                  numberLegend: {
-                    type: Type.ARRAY,
-                    items: {
-                      type: Type.OBJECT,
-                      properties: {
-                        number: { type: Type.INTEGER },
-                        colorName: { type: Type.STRING },
-                        hex: { type: Type.STRING },
-                      },
-                      required: ['number', 'colorName', 'hex'],
+    const schemaConfig = {
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          bookTitle: { type: Type.STRING },
+          subtitle: { type: Type.STRING },
+          dedication: { type: Type.STRING },
+          secondaryTitle: { type: Type.STRING },
+          coverPrompt: { type: Type.STRING },
+          pages: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                pageNumber: { type: Type.INTEGER },
+                sceneTitle: { type: Type.STRING },
+                storyCaption: { type: Type.STRING },
+                secondaryCaption: { type: Type.STRING },
+                funFactOrTip: { type: Type.STRING },
+                imagePrompt: { type: Type.STRING },
+                numberLegend: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      number: { type: Type.INTEGER },
+                      colorName: { type: Type.STRING },
+                      hex: { type: Type.STRING },
                     },
+                    required: ['number', 'colorName', 'hex'],
                   },
                 },
-                required: ['pageNumber', 'sceneTitle', 'storyCaption', 'funFactOrTip', 'imagePrompt'],
               },
+              required: ['pageNumber', 'sceneTitle', 'storyCaption', 'funFactOrTip', 'imagePrompt'],
             },
           },
-          required: ['bookTitle', 'subtitle', 'dedication', 'coverPrompt', 'pages'],
         },
+        required: ['bookTitle', 'subtitle', 'dedication', 'coverPrompt', 'pages'],
       },
-    });
+    };
+
+    let response;
+    try {
+      response = await ai.models.generateContent({
+        model: 'gemini-3.8-flash',
+        contents: prompt,
+        config: schemaConfig,
+      });
+    } catch (primaryErr: any) {
+      console.warn('gemini-3.8-flash planning high demand / error, attempting fallback to gemini-3.1-flash-lite:', primaryErr?.message);
+      response = await ai.models.generateContent({
+        model: 'gemini-3.1-flash-lite',
+        contents: prompt,
+        config: schemaConfig,
+      });
+    }
 
     const parsed = JSON.parse(response.text || '{}');
     if (explicitTitle) {
@@ -337,11 +354,11 @@ app.post('/api/generate-image', async (req, res) => {
     const validSizes = ['1K', '2K', '4K'];
     const chosenSize = validSizes.includes(imageSize) ? imageSize : '1K';
 
-    // Call gemini-3-pro-image-preview as required
+    // Call gemini-3-pro-image or fallback to gemini-3.1-flash-image
     let response;
     try {
       response = await ai.models.generateContent({
-        model: 'gemini-3-pro-image-preview',
+        model: 'gemini-3-pro-image',
         contents: {
           parts: [{ text: enhancedPrompt }],
         },
@@ -353,8 +370,8 @@ app.post('/api/generate-image', async (req, res) => {
         },
       });
     } catch (primaryErr: any) {
-      console.warn('gemini-3-pro-image-preview call encountered issue, attempting gemini-3.1-flash-image fallback:', primaryErr?.message);
-      // Fallback to gemini-3.1-flash-image if pro image preview is not enabled or throttled
+      console.warn('gemini-3-pro-image call encountered issue, attempting gemini-3.1-flash-image fallback:', primaryErr?.message);
+      // Fallback to gemini-3.1-flash-image
       response = await ai.models.generateContent({
         model: 'gemini-3.1-flash-image',
         contents: {
@@ -398,6 +415,226 @@ app.post('/api/generate-image', async (req, res) => {
   }
 });
 
+// Endpoint: Generate specialized thematic cover illustration accompanying child's name
+app.post('/api/generate-cover', async (req, res) => {
+  try {
+    const {
+      theme = 'space dinosaurs',
+      childName = 'Explorer',
+      prompt,
+      imageSize = '1K',
+      aspectRatio = '3:4',
+      difficulty = 'standard',
+      styleVariant = 'mascot',
+      forceVector = false,
+    } = req.body;
+
+    const validSizes = ['1K', '2K', '4K'];
+    const chosenSize = validSizes.includes(imageSize) ? imageSize : '1K';
+
+    // If user requested vector illustration or no AI key
+    if (forceVector || !process.env.GEMINI_API_KEY) {
+      const vectorSvg = createThematicCoverSvg(theme, childName, difficulty, styleVariant);
+      return res.json({
+        success: true,
+        imageUrl: vectorSvg,
+        resolution: chosenSize,
+        isVectorIllustration: true,
+      });
+    }
+
+    const enhancedPrompt = prompt || buildThematicCoverAiPrompt(theme, childName, difficulty);
+    let imageUrl = '';
+
+    try {
+      const ai = getGenAI();
+      let response;
+      try {
+        response = await ai.models.generateContent({
+          model: 'gemini-3-pro-image',
+          contents: {
+            parts: [{ text: enhancedPrompt }],
+          },
+          config: {
+            imageConfig: {
+              aspectRatio: (aspectRatio as any) || '3:4',
+              imageSize: (chosenSize as any) || '1K',
+            },
+          },
+        });
+      } catch (primaryErr: any) {
+        console.warn('gemini-3-pro-image cover failed, trying gemini-3.1-flash-image fallback:', primaryErr?.message);
+        response = await ai.models.generateContent({
+          model: 'gemini-3.1-flash-image',
+          contents: {
+            parts: [{ text: enhancedPrompt }],
+          },
+          config: {
+            imageConfig: {
+              aspectRatio: (aspectRatio as any) || '3:4',
+              imageSize: (chosenSize as any) || '1K',
+            },
+          },
+        });
+      }
+
+      const parts = response.candidates?.[0]?.content?.parts || [];
+      for (const part of parts) {
+        if (part.inlineData?.data) {
+          const mime = part.inlineData.mimeType || 'image/png';
+          imageUrl = `data:${mime};base64,${part.inlineData.data}`;
+          break;
+        }
+      }
+    } catch (apiErr: any) {
+      console.warn('AI cover generation failed, generating instant thematic vector illustration:', apiErr?.message);
+    }
+
+    if (imageUrl) {
+      return res.json({
+        success: true,
+        imageUrl,
+        resolution: chosenSize,
+        isAiGenerated: true,
+      });
+    }
+
+    // High quality instant thematic vector illustration fallback
+    const vectorSvg = createThematicCoverSvg(theme, childName, difficulty, styleVariant);
+    return res.json({
+      success: true,
+      imageUrl: vectorSvg,
+      resolution: chosenSize,
+      isVectorIllustration: true,
+    });
+  } catch (error: any) {
+    console.error('Error in /api/generate-cover:', error);
+    const vectorSvg = createThematicCoverSvg(
+      req.body?.theme || 'space dinosaurs',
+      req.body?.childName || 'Explorer'
+    );
+    return res.json({
+      success: true,
+      imageUrl: vectorSvg,
+      isVectorIllustration: true,
+      errorNotice: error.message,
+    });
+  }
+});
+
+// Endpoint: Convert child or pet photo into personalized coloring book line-art
+app.post('/api/photo-to-line-art', async (req, res) => {
+  try {
+    const {
+      photoBase64,
+      subjectType = 'child', // 'child' | 'pet' | 'toy' | 'custom'
+      childName = 'Hero',
+      theme = 'adventure',
+      sceneSetting = 'exploring a whimsical wonderland',
+      difficulty = 'standard',
+    } = req.body;
+
+    if (!photoBase64) {
+      return res.status(400).json({ success: false, error: 'Photo data is required' });
+    }
+
+    const ai = getGenAI();
+
+    // Clean base64 string
+    const match = photoBase64.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+    const mimeType = match ? match[1] : 'image/jpeg';
+    const base64Data = match ? match[2] : photoBase64;
+
+    let subjectPrompt = `Turn the ${subjectType} from this reference photo into the beloved starring hero named "${childName}" in a children's coloring book scene set in: ${sceneSetting} (${theme} theme).`;
+    if (subjectType === 'pet') {
+      subjectPrompt = `Turn the adorable pet from this reference photo into a playful cartoon animal hero starring in: ${sceneSetting} (${theme} theme). Keep their distinct fur pattern, ears, expression, and personality markings recognizable.`;
+    } else if (subjectType === 'toy') {
+      subjectPrompt = `Turn the toy / companion from this reference photo into a magical living character starring in: ${sceneSetting} (${theme} theme).`;
+    }
+
+    const promptText = `${subjectPrompt}
+Style directives:
+- Ultra-clean, bold black outlines suitable for a children's coloring book.
+- Completely pure white background.
+- Absolutely zero gray shading, zero halftone dots, zero crosshatching, zero colors.
+- Distinct open spaces for children to color with crayons or markers.
+- Joyful, friendly, expressive character design.
+- ${difficulty === 'toddler' ? 'Simple thick lines for toddlers with giant shapes.' : difficulty === 'intricate' ? 'Intricate decorative patterns and details for older kids.' : 'Classic crisp children\'s coloring book page.'}`;
+
+    let response;
+    try {
+      response = await ai.models.generateContent({
+        model: 'gemini-3-pro-image',
+        contents: {
+          parts: [
+            {
+              inlineData: {
+                mimeType,
+                data: base64Data,
+              },
+            },
+            { text: promptText },
+          ],
+        },
+        config: {
+          imageConfig: {
+            aspectRatio: '3:4',
+            imageSize: '1K',
+          },
+        },
+      });
+    } catch (primaryErr: any) {
+      console.warn('Pro image preview failed for photo-to-art, trying flash image fallback:', primaryErr?.message);
+      response = await ai.models.generateContent({
+        model: 'gemini-3.1-flash-image',
+        contents: {
+          parts: [
+            {
+              inlineData: {
+                mimeType,
+                data: base64Data,
+              },
+            },
+            { text: promptText },
+          ],
+        },
+        config: {
+          imageConfig: {
+            aspectRatio: '3:4',
+            imageSize: '1K',
+          },
+        },
+      });
+    }
+
+    const parts = response.candidates?.[0]?.content?.parts || [];
+    let imageUrl = '';
+    for (const part of parts) {
+      if (part.inlineData?.data) {
+        const mime = part.inlineData.mimeType || 'image/png';
+        imageUrl = `data:${mime};base64,${part.inlineData.data}`;
+        break;
+      }
+    }
+
+    if (!imageUrl) {
+      throw new Error('No image line art was returned by the AI model.');
+    }
+
+    return res.json({
+      success: true,
+      imageUrl,
+      caption: `Starring ${childName} on a magical ${theme} adventure!`,
+    });
+  } catch (error: any) {
+    console.error('Error in photo-to-line-art:', error);
+    return res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to convert photo to line art',
+    });
+  }
+});
+
 // Endpoint: Multi-turn Chat with Gemini with role system instructions and model routing
 app.post('/api/chat', async (req, res) => {
   try {
@@ -430,14 +667,14 @@ Guidelines:
     }
 
     // Model selection validation
-    // gemini-3.1-pro-preview for complex tasks, gemini-3.5-flash for general, gemini-3.1-flash-lite for fast
-    let selectedModel = 'gemini-3.5-flash';
+    // gemini-3.1-pro-preview for complex tasks, gemini-3.8-flash for general, gemini-3.1-flash-lite for fast
+    let selectedModel = 'gemini-3.8-flash';
     if (model === 'gemini-3.1-pro-preview' || role === 'complex_storyteller') {
       selectedModel = 'gemini-3.1-pro-preview';
     } else if (model === 'gemini-3.1-flash-lite' || role === 'quick_sparks') {
       selectedModel = 'gemini-3.1-flash-lite';
-    } else if (model === 'gemini-3.5-flash') {
-      selectedModel = 'gemini-3.5-flash';
+    } else if (model === 'gemini-3.8-flash' || model === 'gemini-3.5-flash') {
+      selectedModel = 'gemini-3.8-flash';
     }
 
     // Convert multi-turn message history into contents array for Gemini

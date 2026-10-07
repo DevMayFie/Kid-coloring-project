@@ -1,4 +1,5 @@
 import { ColoringBook, ChatRole } from '../types';
+import { createThematicCoverSvg, buildThematicCoverAiPrompt } from './coverIllustrationGenerator';
 
 // Clean SVG black & white thick line art generator for starter previews and reliable offline rendering
 export function createSampleLineArtSvg(sceneType: string, label: string): string {
@@ -335,10 +336,20 @@ export const DEFAULT_COLORING_BOOK: ColoringBook = {
   dedication: 'Specially created for Leo • Grab your crayons and explore!',
   resolution: '2K',
   aspectRatio: '3:4',
-  coverImageUrl: createSampleLineArtSvg('space_dino_1', "LEO'S COVER"),
+  coverImageUrl: createThematicCoverSvg('Space Dinosaurs', 'Leo', 'standard'),
   coverStatus: 'completed',
-  coverPrompt: "Cover page art of a happy cartoon dinosaur astronaut floating among cute stars and planets",
+  coverPrompt: buildThematicCoverAiPrompt('Space Dinosaurs', 'Leo', 'standard'),
   createdAt: Date.now(),
+  brandIntegration: {
+    enabled: true,
+    organizationName: 'Creative Kids Studio',
+    websiteUrl: 'https://ai.studio',
+    tagline: 'Presented by',
+    showOnCover: true,
+    showOnPageFooter: true,
+    showWebsiteQrCode: true,
+    logoPreset: 'art-palette',
+  },
   stickerSheet: {
     id: 'stickers-starter',
     title: "Leo's Space Dinosaur Printable Stickers",
@@ -407,34 +418,60 @@ export const DEFAULT_COLORING_BOOK: ColoringBook = {
 
 export const POPULAR_THEMES = [
   {
-    theme: 'Jungle Animals',
-    emoji: '🦁',
-    desc: 'Lions, monkeys swinging in vines, friendly elephants, and toucans',
-  },
-  {
-    theme: 'Magical Unicorns',
-    emoji: '🦄',
-    desc: 'Rainbow horned unicorns, enchanted castles, sparkly clouds, and fairy glens',
-  },
-  {
-    theme: 'Fast Cars',
-    emoji: '🏎️',
-    desc: 'Speedy racing cars, turbo tracks, checkered flags, and monster trucks',
+    theme: 'Space Dinosaurs',
+    emoji: '🚀',
+    tag: 'Sci-Fi Explorer',
+    suggestedTitle: 'Cosmic Dino Astronauts',
+    desc: 'Astronaut T-Rexes, rocket rovers, and planetary explorer dinos',
   },
   {
     theme: 'Under the Sea',
     emoji: '🐠',
+    tag: 'Ocean Discovery',
+    suggestedTitle: 'Coral Reef Mermaid Safari',
     desc: 'Playful dolphins, colorful clownfish, hidden sunken treasure, and coral reefs',
+  },
+  {
+    theme: 'Magical Unicorns',
+    emoji: '🦄',
+    tag: 'Fairy Tale',
+    suggestedTitle: 'The Enchanted Rainbow Kingdom',
+    desc: 'Rainbow horned unicorns, enchanted castles, sparkly clouds, and fairy glens',
+  },
+  {
+    theme: 'Superhero Puppies',
+    emoji: '🐾',
+    tag: 'Hero Action',
+    suggestedTitle: 'Super Paws to the Rescue',
+    desc: 'Cape-wearing rescue pups solving mysteries and helping friends in town',
+  },
+  {
+    theme: 'Jungle Animals',
+    emoji: '🦁',
+    tag: 'Wildlife Adventure',
+    suggestedTitle: 'The Great Jungle Safari',
+    desc: 'Lions, monkeys swinging in vines, friendly elephants, and toucans',
+  },
+  {
+    theme: 'Fast Cars',
+    emoji: '🏎️',
+    tag: 'Speed & Racing',
+    suggestedTitle: 'Turbo Track Grand Prix',
+    desc: 'Speedy racing cars, turbo tracks, checkered flags, and monster trucks',
   },
   {
     theme: 'Friendly Monsters',
     emoji: '👾',
+    tag: 'Silly & Fun',
+    suggestedTitle: 'The Monster Tea Party',
     desc: 'Fluffy friendly monsters having tea parties, silly polka-dot smiles, and games',
   },
   {
-    theme: 'Space Dinosaurs',
-    emoji: '🚀',
-    desc: 'Astronaut T-Rexes, rocket rovers, and planetary explorer dinos',
+    theme: 'Fairy Tale Kingdom',
+    emoji: '🏰',
+    tag: 'Fantasy Quest',
+    suggestedTitle: 'Royal Knights & Magic Castles',
+    desc: 'Brave knights, friendly gentle dragons, royal banquets, and magical towers',
   },
 ];
 

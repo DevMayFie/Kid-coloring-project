@@ -3,6 +3,37 @@
 // Web Audio API synthesizer for instant cheerful sound effects (no external audio files needed)
 let audioCtx: AudioContext | null = null;
 
+let isAudioMuted = false;
+
+if (typeof window !== 'undefined') {
+  try {
+    isAudioMuted = localStorage.getItem('colorcraft_sound_muted') === 'true';
+  } catch (e) {}
+}
+
+export function isSoundMuted(): boolean {
+  return isAudioMuted;
+}
+
+export function setSoundMuted(muted: boolean): boolean {
+  isAudioMuted = muted;
+  if (typeof window !== 'undefined') {
+    try {
+      localStorage.setItem('colorcraft_sound_muted', String(muted));
+      window.dispatchEvent(new CustomEvent('colorcraft_sound_toggle', { detail: { muted } }));
+    } catch (e) {}
+  }
+  if (muted) {
+    stopBackgroundMelody();
+    stopSpeaking();
+  }
+  return isAudioMuted;
+}
+
+export function toggleSoundMuted(): boolean {
+  return setSoundMuted(!isAudioMuted);
+}
+
 function getAudioContext(): AudioContext | null {
   if (typeof window === 'undefined') return null;
   if (!audioCtx) {
@@ -21,6 +52,7 @@ function getAudioContext(): AudioContext | null {
  * Play a cheerful chime when selecting a tool, color, or stamping
  */
 export function playChimeSound(type: 'pop' | 'sparkle' | 'fanfare' | 'click' | 'magic' | 'pageflip' = 'pop') {
+  if (isAudioMuted) return;
   try {
     const ctx = getAudioContext();
     if (!ctx) return;
@@ -117,6 +149,7 @@ export function playChimeSound(type: 'pop' | 'sparkle' | 'fanfare' | 'click' | '
  * Play an instant cheerful pop sound effect with optional pitch frequency
  */
 export function playPopSound(pitch?: number) {
+  if (isAudioMuted) return;
   try {
     const ctx = getAudioContext();
     if (!ctx) return;
@@ -143,6 +176,7 @@ export function playPopSound(pitch?: number) {
  * Play an instant bubbly paint splash / color droplet sound effect
  */
 export function playSplashSound(pitchMultiplier = 1.0) {
+  if (isAudioMuted) return;
   try {
     const ctx = getAudioContext();
     if (!ctx) return;
@@ -237,7 +271,7 @@ function playLullabyNote(freq: number) {
  * Start or resume gentle kid-friendly background melody
  */
 export function startBackgroundMelody() {
-  if (typeof window === 'undefined') return;
+  if (isAudioMuted || typeof window === 'undefined') return;
   const ctx = getAudioContext();
   if (!ctx) return;
 
@@ -302,7 +336,7 @@ export function speakStory(
   text: string,
   options?: { lang?: string; onEnd?: () => void } | (() => void)
 ): () => void {
-  if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
+  if (isAudioMuted || typeof window === 'undefined' || !('speechSynthesis' in window)) {
     return () => {};
   }
 

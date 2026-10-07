@@ -22,33 +22,59 @@ import {
   ChevronRight,
   BookOpen,
   LayoutGrid,
+  Camera,
+  Award,
+  QrCode,
+  Building2,
+  Globe,
+  ExternalLink,
+  Compass,
 } from 'lucide-react';
-import { ColoringBook, ColoringPage, ImageResolution, FavoriteBook, ActivityMode, BookLanguage, NumberLegendItem } from '../types';
+import { ColoringBook, ColoringPage, ImageResolution, FavoriteBook, ActivityMode, BookLanguage, NumberLegendItem, PageBorderStyle, PlacedSticker } from '../types';
 import { DigitalColoringModal } from './DigitalColoringModal';
 import { PageColorTesterCanvas } from './PageColorTesterCanvas';
 import { FavoritesModal } from './FavoritesModal';
 import { FlipBookReader } from './FlipBookReader';
 import { FilmStripNav } from './FilmStripNav';
+import { PageBorderRenderer } from './PageBorderRenderer';
+import { BorderSelectorModal } from './BorderSelectorModal';
+import { PersonalizedHeroModal } from './PersonalizedHeroModal';
+import { CertificateModal } from './CertificateModal';
+import { VoiceRecorderWidget } from './VoiceRecorderWidget';
 import { getFavorites, saveFavorite, removeFavorite, isFavorite } from '../utils/favoritesStorage';
 import { playChimeSound, speakStory, stopSpeaking } from '../utils/kidAudio';
+import { getThematicCoverDescription, detectThemeCategory } from '../utils/coverIllustrationGenerator';
 import confetti from 'canvas-confetti';
 
 interface ColoringBookViewProps {
   book: ColoringBook;
   onRegeneratePage: (pageId: string, customPrompt?: string, resolution?: ImageResolution) => Promise<void>;
-  onRegenerateCover: () => Promise<void>;
+  onRegenerateCover: (forceVector?: boolean) => Promise<void>;
   onRegenerateStickers?: () => Promise<void>;
   onEditPage: (page: ColoringPage) => void;
   onPrintSinglePage: (page: ColoringPage) => void;
   onPrintStickerSheet?: () => void;
   onLoadFavorite?: (favorite: FavoriteBook) => void;
   onDownloadPdf?: () => void;
+  onOpenPrintPreview?: () => void;
+  onOpenBatchRegenerate?: () => void;
+  onOpenPageReorder?: () => void;
+  onUpdatePageBorder?: (pageId: string, borderStyle: PageBorderStyle) => void;
+  onUpdateAllBorders?: (borderStyle: PageBorderStyle) => void;
+  onSavePageArtwork?: (pageId: string, coloredDataUrl: string, stickers: PlacedSticker[], borderStyle?: PageBorderStyle) => void;
+  onSaveVoiceAudio?: (pageId: string, audioUrl: string, duration: number) => void;
+  onAddHeroPage?: (heroData: { imageUrl: string; title: string; caption: string; asCover?: boolean }) => void;
+  onToggleQrCode?: (enabled: boolean) => void;
+  onUpdateCertificate?: (details: { recipientName: string; awardDate: string; presenter?: string }) => void;
   isPreparingPdf?: boolean;
   pdfProgress?: number;
   isPdfBtnTooltipVisible?: boolean;
   setIsPdfBtnTooltipVisible?: (visible: boolean) => void;
   isBookGenerationFinished?: boolean;
   isGeneratingBook?: boolean;
+  onOpenBrandModal?: () => void;
+  onOpenWebsiteModal?: () => void;
+  onOpenActivitiesModal?: () => void;
 }
 
 export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
@@ -61,12 +87,25 @@ export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
   onPrintStickerSheet,
   onLoadFavorite,
   onDownloadPdf,
+  onOpenPrintPreview,
+  onOpenBatchRegenerate,
+  onOpenPageReorder,
+  onUpdatePageBorder,
+  onUpdateAllBorders,
+  onSavePageArtwork,
+  onSaveVoiceAudio,
+  onAddHeroPage,
+  onToggleQrCode,
+  onUpdateCertificate,
   isPreparingPdf,
   pdfProgress,
   isPdfBtnTooltipVisible,
   setIsPdfBtnTooltipVisible,
   isBookGenerationFinished,
   isGeneratingBook,
+  onOpenBrandModal,
+  onOpenWebsiteModal,
+  onOpenActivitiesModal,
 }) => {
   const [selectedPreviewImg, setSelectedPreviewImg] = useState<{ url: string; title: string } | null>(null);
   const [regeneratingIds, setRegeneratingIds] = useState<Record<string, boolean>>({});
@@ -77,7 +116,66 @@ export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
   const [isSavedFavorite, setIsSavedFavorite] = useState(() => isFavorite(book.id, book.theme, book.childName));
   const [viewMode, setViewMode] = useState<'grid' | 'flip'>('grid');
   const [activePageIndex, setActivePageIndex] = useState<number>(0);
+  const [flipDirection, setFlipDirection] = useState<number>(1);
+
+  // Compile sequential slide entries for fast page-flip navigation
+  const navSlides: { id: string; label: string; title: string; index: number; type: 'cover' | 'page' | 'stickers' }[] = [];
+  if (book.coverImageUrl || book.coverStatus) {
+    navSlides.push({
+      id: 'nav-cover',
+      label: '📕 Cover',
+      title: `${book.childName}'s Custom Cover`,
+      index: 0,
+      type: 'cover',
+    });
+  }
+  book.pages.forEach((p, idx) => {
+    const slideIdx = (book.coverImageUrl || book.coverStatus ? 1 : 0) + idx;
+    navSlides.push({
+      id: `nav-${p.id}`,
+      label: `Page ${p.pageNumber}`,
+      title: p.title,
+      index: slideIdx,
+      type: 'page',
+    });
+  });
+  if (book.stickerSheet?.imageUrl || book.stickerSheet?.status) {
+    const stickerSlideIdx = (book.coverImageUrl || book.coverStatus ? 1 : 0) + book.pages.length;
+    navSlides.push({
+      id: 'nav-stickers',
+      label: '✂️ Stickers',
+      title: book.stickerSheet.title || `${book.childName}'s Printable Stickers`,
+      index: stickerSlideIdx,
+      type: 'stickers',
+    });
+  }
+
+  const safeActiveIndex = Math.max(0, Math.min(activePageIndex, Math.max(0, navSlides.length - 1)));
+  const currentNavSlide = navSlides[safeActiveIndex] || navSlides[0];
+
+  // Navigate between coloring pages with subtle flip-book transition
+  const handleNavigatePage = (newIndex: number) => {
+    if (newIndex < 0 || newIndex >= navSlides.length) return;
+    const direction = newIndex >= activePageIndex ? 1 : -1;
+    setFlipDirection(direction);
+    setActivePageIndex(newIndex);
+    if (viewMode !== 'flip') {
+      setViewMode('flip');
+    }
+    playChimeSound('pageflip');
+    // Scroll to the book container smoothly
+    const bookContainer = document.getElementById('coloring-book-viewer');
+    if (bookContainer) {
+      bookContainer.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  };
+
+  // New Feature Modals state
+  const [isHeroModalOpen, setIsHeroModalOpen] = useState(false);
+  const [isCertificateModalOpen, setIsCertificateModalOpen] = useState(false);
+
   const [activeColoringPage, setActiveColoringPage] = useState<{
+    pageId?: string;
     title: string;
     pageNumber?: number;
     imageUrl: string;
@@ -88,7 +186,14 @@ export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
     activityMode?: ActivityMode;
     funFactOrTip?: string;
     slideIndex?: number;
+    borderStyle?: PageBorderStyle;
+    placedStickers?: PlacedSticker[];
+    voiceAudioUrl?: string;
   } | null>(null);
+
+  // Page Border modal state
+  const [isBorderModalOpen, setIsBorderModalOpen] = useState(false);
+  const [borderModalTargetPage, setBorderModalTargetPage] = useState<ColoringPage | null>(null);
 
   // Sync favorites state on book change or storage update
   useEffect(() => {
@@ -231,7 +336,105 @@ export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
           </div>
 
           {/* Action Buttons */}
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {onOpenBatchRegenerate && (
+              <button
+                type="button"
+                onClick={() => {
+                  playChimeSound('sparkle');
+                  onOpenBatchRegenerate();
+                }}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-linear-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white text-xs font-black transition-all cursor-pointer shadow-xs active:scale-95"
+                title="Batch regenerate all pages in book with 1-click"
+              >
+                <Sparkles className="w-4 h-4 text-yellow-200 animate-pulse" />
+                <span>Batch Regenerate</span>
+              </button>
+            )}
+
+            <button
+              type="button"
+              onClick={() => {
+                setBorderModalTargetPage(null); // null means apply book-wide
+                setIsBorderModalOpen(true);
+                playChimeSound('pop');
+              }}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white hover:bg-amber-50 text-gray-800 border border-amber-300 text-xs font-bold transition-all cursor-pointer shadow-xs"
+              title="Customize borders for all pages in this coloring book"
+            >
+              <span>🖼️</span>
+              <span>Borders</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setIsHeroModalOpen(true);
+                playChimeSound('sparkle');
+              }}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-linear-to-r from-rose-500 to-pink-500 hover:from-rose-600 hover:to-pink-600 text-white text-xs font-black transition-all cursor-pointer shadow-xs active:scale-95"
+              title="Transform child or pet photo into personalized line art"
+            >
+              <Camera className="w-4 h-4 text-pink-100" />
+              <span>Photo-to-Line-Art</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setIsCertificateModalOpen(true);
+                playChimeSound('fanfare');
+              }}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-amber-100 hover:bg-amber-200 text-amber-950 border border-amber-300 text-xs font-black transition-all cursor-pointer shadow-xs"
+              title="Award personalized Coloring Master Diploma certificate"
+            >
+              <Award className="w-4 h-4 text-amber-700" />
+              <span>Diploma</span>
+            </button>
+
+            {onToggleQrCode && (
+              <button
+                type="button"
+                onClick={() => {
+                  const newState = !(book.includeQrCode !== false);
+                  onToggleQrCode(newState);
+                }}
+                className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer shadow-xs border ${
+                  book.includeQrCode !== false
+                    ? 'bg-emerald-50 text-emerald-900 border-emerald-300'
+                    : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                }`}
+                title="Toggle bottom-corner QR code for audio read-along on physical printouts"
+              >
+                <QrCode className={`w-4 h-4 ${book.includeQrCode !== false ? 'text-emerald-600' : 'text-gray-500'}`} />
+                <span>QR Audio: {book.includeQrCode !== false ? 'ON' : 'OFF'}</span>
+              </button>
+            )}
+
+            {onOpenPageReorder && (
+              <button
+                type="button"
+                onClick={onOpenPageReorder}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-orange-50 hover:bg-orange-100 text-orange-950 border border-orange-300 text-xs font-bold transition-all cursor-pointer shadow-xs active:scale-95"
+                title="Arrange story sequence with drag-and-drop page reordering"
+              >
+                <span>🔀</span>
+                <span>Arrange Story</span>
+              </button>
+            )}
+
+            {onOpenPrintPreview && (
+              <button
+                type="button"
+                onClick={onOpenPrintPreview}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 text-xs font-bold transition-all cursor-pointer shadow-xs"
+                title="Open full-screen Print Preview modal to inspect all PDF pages"
+              >
+                <Eye className="w-4 h-4 text-amber-700" />
+                <span>Print Preview</span>
+              </button>
+            )}
+
             <button
               type="button"
               onClick={handleToggleFavorite}
@@ -259,29 +462,183 @@ export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
         </div>
       </div>
 
-      {/* 1. INTERACTIVE 3D FLIP BOOK READER (Single-page with animated page turn transitions) */}
-      {viewMode === 'flip' && (
-        <FlipBookReader
-          book={book}
-          activePageIndex={activePageIndex}
-          onPageChange={setActivePageIndex}
-          onOpenColorStudio={setActiveColoringPage}
-          onZoomImage={setSelectedPreviewImg}
-          onRegenerateCover={onRegenerateCover}
-          onRegeneratePage={(id) => handlePageRegen(id)}
-          onEditPage={onEditPage}
-          onPrintSinglePage={onPrintSinglePage}
-          onPrintStickerSheet={onPrintStickerSheet}
-          onRegenerateStickers={onRegenerateStickers}
-          regeneratingIds={regeneratingIds}
-          speakingPageId={speakingPageId}
-          onReadAloud={handleReadAloud}
-        />
-      )}
+      {/* Interactive Page Navigation Bar with Subtle Flip-Book Controls */}
+      <div className="bg-white/95 backdrop-blur-xs rounded-2xl border border-amber-200/90 p-3 sm:p-4 shadow-xs flex flex-wrap items-center justify-between gap-3">
+        {/* Prev & Next Navigation Buttons */}
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            id="book-nav-prev-btn"
+            onClick={() => handleNavigatePage(safeActiveIndex - 1)}
+            disabled={safeActiveIndex === 0}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 text-xs font-bold transition-all disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer shadow-2xs active:scale-95"
+            title="Flip to Previous Coloring Page (←)"
+          >
+            <ChevronLeft className="w-4 h-4 text-amber-700" />
+            <span className="hidden sm:inline">Prev Page</span>
+            <span className="sm:hidden">Prev</span>
+          </button>
 
-      {/* 2. ALL PAGES GRID OVERVIEW */}
-      {viewMode === 'grid' && (
-        <div className="space-y-8">
+          <button
+            type="button"
+            id="book-nav-next-btn"
+            onClick={() => handleNavigatePage(safeActiveIndex + 1)}
+            disabled={safeActiveIndex >= navSlides.length - 1}
+            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-linear-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white text-xs font-bold transition-all disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer shadow-2xs active:scale-95"
+            title="Flip to Next Coloring Page (→)"
+          >
+            <span className="hidden sm:inline">Next Page</span>
+            <span className="sm:hidden">Next</span>
+            <ChevronRight className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Current Active Page Label & Quick Slide Indicators */}
+        <div className="flex items-center gap-2 sm:gap-3 flex-wrap justify-center">
+          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-amber-50 border border-amber-200/80">
+            <BookOpen className="w-3.5 h-3.5 text-amber-700" />
+            <span className="text-xs font-black text-amber-950">
+              {currentNavSlide?.label || `Page ${safeActiveIndex + 1}`}
+            </span>
+            <span className="text-[11px] text-amber-700 font-semibold hidden md:inline">
+              • {currentNavSlide?.title}
+            </span>
+          </div>
+
+          {/* Quick Page Jump Pills */}
+          <div className="flex items-center gap-1 overflow-x-auto max-w-[280px] sm:max-w-xs md:max-w-md py-0.5">
+            {navSlides.map((item) => {
+              const isSelected = safeActiveIndex === item.index;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => handleNavigatePage(item.index)}
+                  className={`px-2 py-0.5 rounded-lg text-xs font-bold transition-all cursor-pointer whitespace-nowrap ${
+                    isSelected
+                      ? 'bg-amber-600 text-white shadow-xs ring-2 ring-amber-300 scale-105 font-black'
+                      : 'bg-amber-50/70 hover:bg-amber-100 text-amber-900 border border-amber-200 hover:scale-102'
+                  }`}
+                  title={`Flip to ${item.title}`}
+                >
+                  {item.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* View Mode Indicator / Switch Quick Toggle */}
+        <div className="flex items-center gap-2">
+          {onOpenBrandModal && (
+            <button
+              type="button"
+              onClick={onOpenBrandModal}
+              className={`flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer border shadow-2xs ${
+                book.brandIntegration?.enabled
+                  ? 'bg-amber-100 text-amber-950 border-amber-400'
+                  : 'bg-white hover:bg-amber-50 text-gray-700 border-gray-200'
+              }`}
+              title="Configure custom organization logo, sponsor, and website URL"
+            >
+              <Building2 className="w-3.5 h-3.5 text-amber-700" />
+              <span className="hidden sm:inline">Brand Logo</span>
+            </button>
+          )}
+
+          {onOpenWebsiteModal && (
+            <button
+              type="button"
+              onClick={onOpenWebsiteModal}
+              className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-blue-50 hover:bg-blue-100 text-blue-900 text-xs font-bold transition-all cursor-pointer border border-blue-200 shadow-2xs"
+              title="Open Website Embed Widget and sharing tools"
+            >
+              <Globe className="w-3.5 h-3.5 text-blue-700" />
+              <span className="hidden sm:inline">Website &amp; Embed</span>
+            </button>
+          )}
+
+          {onOpenActivitiesModal && (
+            <button
+              type="button"
+              onClick={onOpenActivitiesModal}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-linear-to-r from-amber-50 to-orange-50 hover:from-amber-100 hover:to-orange-100 text-orange-950 text-xs font-bold transition-all cursor-pointer border border-orange-300 shadow-2xs"
+              title="Bonus Maze Adventure, Cut-Out Bookmarks, and Color Mixing Lab"
+            >
+              <Compass className="w-3.5 h-3.5 text-orange-700" />
+              <span>Activities &amp; Crafts</span>
+            </button>
+          )}
+
+          {viewMode === 'grid' ? (
+            <button
+              type="button"
+              onClick={() => {
+                setViewMode('flip');
+                playChimeSound('pageflip');
+              }}
+              className="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-amber-100/90 hover:bg-amber-200 text-amber-950 text-xs font-bold transition-all cursor-pointer border border-amber-300 shadow-2xs"
+              title="Open full interactive Flip Book reader"
+            >
+              <BookOpen className="w-3.5 h-3.5 text-amber-800" />
+              <span>Open Flip Mode</span>
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => {
+                setViewMode('grid');
+                playChimeSound('pop');
+              }}
+              className="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-amber-50 hover:bg-amber-100 text-amber-900 text-xs font-bold transition-all cursor-pointer border border-amber-200 shadow-2xs"
+              title="Switch to gallery grid view"
+            >
+              <LayoutGrid className="w-3.5 h-3.5 text-amber-700" />
+              <span>Grid View</span>
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Main Coloring Book Reader / Grid Views with Animated Flip Transition */}
+      <AnimatePresence mode="wait" custom={flipDirection}>
+        {viewMode === 'flip' ? (
+          <motion.div
+            key="view-flip"
+            custom={flipDirection}
+            initial={{ opacity: 0, rotateY: flipDirection > 0 ? 12 : -12, scale: 0.985 }}
+            animate={{ opacity: 1, rotateY: 0, scale: 1 }}
+            exit={{ opacity: 0, rotateY: flipDirection > 0 ? -12 : 12, scale: 0.985 }}
+            transition={{ duration: 0.32, ease: [0.22, 1, 0.36, 1] }}
+            style={{ transformStyle: 'preserve-3d' }}
+          >
+            <FlipBookReader
+              book={book}
+              activePageIndex={safeActiveIndex}
+              onPageChange={handleNavigatePage}
+              onOpenColorStudio={setActiveColoringPage}
+              onZoomImage={setSelectedPreviewImg}
+              onRegenerateCover={onRegenerateCover}
+              onRegeneratePage={(id) => handlePageRegen(id)}
+              onEditPage={onEditPage}
+              onPrintSinglePage={onPrintSinglePage}
+              onPrintStickerSheet={onPrintStickerSheet}
+              onRegenerateStickers={onRegenerateStickers}
+              regeneratingIds={regeneratingIds}
+              speakingPageId={speakingPageId}
+              onReadAloud={handleReadAloud}
+              onSaveVoiceAudio={onSaveVoiceAudio}
+            />
+          </motion.div>
+        ) : (
+          <motion.div
+            key="view-grid"
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -12 }}
+            transition={{ duration: 0.28, ease: 'easeOut' }}
+            className="space-y-8"
+          >
           {/* COVER CARD PREVIEW */}
           <section
             id="coloring-book-cover-card"
@@ -360,9 +717,7 @@ export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
                   <button
                     type="button"
                     onClick={() => {
-                      setActivePageIndex(0);
-                      setViewMode('flip');
-                      playChimeSound('pageflip');
+                      handleNavigatePage(0);
                     }}
                     className="flex items-center gap-1 px-3 py-1 rounded-full bg-amber-100/80 hover:bg-amber-200 text-amber-900 text-xs font-bold transition-all cursor-pointer"
                   >
@@ -379,12 +734,65 @@ export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
                   {book.subtitle}
                 </p>
 
+                {/* Thematic Illustration Highlight */}
+                <div className="flex items-start gap-2.5 p-3 rounded-2xl bg-orange-50/80 border border-orange-200/90 text-xs text-orange-950 shadow-2xs">
+                  <Sparkles className="w-4 h-4 text-orange-600 shrink-0 mt-0.5" />
+                  <div className="min-w-0">
+                    <span className="font-bold text-orange-900 block truncate">
+                      Thematic Cover Art • {book.theme}
+                    </span>
+                    <span className="text-[11px] text-orange-800 leading-normal block">
+                      {getThematicCoverDescription(book.theme, book.childName)}
+                    </span>
+                  </div>
+                </div>
+
                 <div className="p-3.5 rounded-2xl bg-amber-50/90 border border-amber-200 text-xs text-amber-950 font-medium space-y-1">
                   <p><strong>Dedication:</strong> {book.dedication}</p>
                   <p className="text-[11px] text-amber-800">
                     <strong>Color Your Own Cover:</strong> Printed with large coloring title fonts so {book.childName} can color their own personalized book cover!
                   </p>
                 </div>
+
+                {/* Brand & Website Presentation Banner */}
+                {book.brandIntegration?.enabled && book.brandIntegration.showOnCover && (
+                  <div className="p-3 rounded-2xl bg-linear-to-r from-amber-50 to-orange-50 border border-amber-300/80 flex items-center justify-between gap-3 shadow-2xs">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      {book.brandIntegration.logoUrl ? (
+                        <img
+                          src={book.brandIntegration.logoUrl}
+                          alt="Brand Logo"
+                          className="w-8 h-8 rounded-lg object-contain bg-white p-0.5 border border-amber-200 shrink-0"
+                        />
+                      ) : (
+                        <Building2 className="w-5 h-5 text-amber-700 shrink-0" />
+                      )}
+                      <div className="min-w-0">
+                        <span className="text-[10px] uppercase font-bold text-amber-800 tracking-wider block truncate">
+                          {book.brandIntegration.tagline || 'Presented by'}
+                        </span>
+                        <span className="text-xs font-black text-gray-900 block truncate">
+                          {book.brandIntegration.organizationName}
+                        </span>
+                      </div>
+                    </div>
+
+                    {book.brandIntegration.websiteUrl && (
+                      <a
+                        href={book.brandIntegration.websiteUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-white hover:bg-amber-100 text-amber-900 border border-amber-200 text-[11px] font-bold transition-all shrink-0 shadow-2xs"
+                      >
+                        <Globe className="w-3 h-3 text-amber-600" />
+                        <span className="max-w-[140px] truncate">
+                          {book.brandIntegration.websiteUrl.replace(/^https?:\/\//, '')}
+                        </span>
+                        <ExternalLink className="w-2.5 h-2.5 opacity-60" />
+                      </a>
+                    )}
+                  </div>
+                )}
 
                 {/* Actions for Cover */}
                 <div className="flex flex-wrap items-center gap-2.5 pt-1">
@@ -394,10 +802,12 @@ export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
                       onClick={() => {
                         playChimeSound('magic');
                         setActiveColoringPage({
+                          pageId: 'cover',
                           title: `${book.childName}'s Custom Cover`,
                           imageUrl: book.coverImageUrl!,
                           storyCaption: book.subtitle,
                           funFactOrTip: book.dedication,
+                          borderStyle: book.defaultBorderStyle || 'classic-double',
                         });
                       }}
                       className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-linear-to-r from-amber-500 via-orange-500 to-amber-600 hover:from-amber-600 hover:to-orange-600 text-white text-xs font-black shadow-sm active:scale-95 transition-all cursor-pointer"
@@ -408,12 +818,22 @@ export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
                   )}
 
                   <button
-                    onClick={onRegenerateCover}
+                    onClick={() => onRegenerateCover(false)}
                     disabled={book.coverStatus === 'generating'}
                     className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-white hover:bg-amber-50 border border-amber-300 text-amber-900 text-xs font-bold transition-colors disabled:opacity-50 shadow-2xs cursor-pointer"
                   >
                     <RefreshCw className={`w-3.5 h-3.5 ${book.coverStatus === 'generating' ? 'animate-spin' : ''}`} />
-                    <span>{book.coverStatus === 'generating' ? 'Generating Art...' : 'Redo Cover Art'}</span>
+                    <span>{book.coverStatus === 'generating' ? 'Generating Art...' : 'Redo AI Cover Art'}</span>
+                  </button>
+
+                  <button
+                    onClick={() => onRegenerateCover(true)}
+                    disabled={book.coverStatus === 'generating'}
+                    title="Switch to instant hand-drawn vector thematic cover"
+                    className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-amber-50 hover:bg-amber-100 border border-amber-300/80 text-amber-900 text-xs font-bold transition-colors disabled:opacity-50 shadow-2xs cursor-pointer"
+                  >
+                    <Sparkles className="w-3.5 h-3.5 text-amber-600" />
+                    <span>Instant Vector Cover</span>
                   </button>
 
                   {book.coverImageUrl && (
@@ -492,9 +912,7 @@ export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
                         type="button"
                         onClick={() => {
                           const pageSlideIdx = (book.coverImageUrl ? 1 : 0) + index;
-                          setActivePageIndex(pageSlideIdx);
-                          setViewMode('flip');
-                          playChimeSound('pageflip');
+                          handleNavigatePage(pageSlideIdx);
                         }}
                         className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-amber-100/70 hover:bg-amber-200 text-amber-900 text-[11px] font-bold transition-all cursor-pointer"
                         title="Open in Flip Book mode"
@@ -570,14 +988,57 @@ export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
                           className="w-full h-full relative flex items-center justify-center"
                         >
                           <img
-                            src={page.imageUrl}
+                            src={page.coloredImageUrl || page.imageUrl}
                             alt={page.title}
                             referrerPolicy="no-referrer"
                             className="w-full h-full object-contain filter contrast-125 rounded-lg transition-transform duration-200 group-hover:scale-101"
                           />
+
+                          {/* Customizable Page Border Overlay */}
+                          <div className="absolute inset-0 pointer-events-none">
+                            <PageBorderRenderer borderStyle={page.borderStyle || book.defaultBorderStyle || 'classic-double'} />
+                          </div>
+
+                          {/* Placed Stickers overlay if not baked into coloredImageUrl */}
+                          {!page.coloredImageUrl && page.placedStickers && page.placedStickers.length > 0 && (
+                            <div className="absolute inset-0 pointer-events-none">
+                              {page.placedStickers.map((st) => (
+                                <div
+                                  key={st.id}
+                                  className="absolute select-none"
+                                  style={{
+                                    left: `${st.x}%`,
+                                    top: `${st.y}%`,
+                                    transform: `translate(-50%, -50%) rotate(${st.rotation}deg) scale(${st.scale})`,
+                                  }}
+                                >
+                                  <span className="text-2xl drop-shadow-md">{st.emoji}</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+
+                          {/* Colored artwork badge */}
+                          {page.coloredImageUrl && (
+                            <div className="absolute top-2 right-2 bg-amber-500 text-white text-[10px] font-black px-2 py-0.5 rounded-full shadow-xs flex items-center gap-1 z-10">
+                              <Sparkles className="w-3 h-3" /> Colored!
+                            </div>
+                          )}
+
+                          {/* Corner QR code badge indicator */}
+                          {book.includeQrCode !== false && (
+                            <div
+                              className="absolute bottom-2 right-2 bg-white/90 border border-gray-300 rounded-md px-1.5 py-0.5 text-[9px] font-black text-gray-700 shadow-2xs select-none flex items-center gap-1 z-10"
+                              title="QR Code for audio read-along included on printouts"
+                            >
+                              <span>📱</span>
+                              <span>QR Audio</span>
+                            </div>
+                          )}
+
                           {/* Zoom button on hover */}
                           <button
-                            onClick={() => setSelectedPreviewImg({ url: page.imageUrl!, title: `Page ${page.pageNumber}: ${page.title}` })}
+                            onClick={() => setSelectedPreviewImg({ url: page.coloredImageUrl || page.imageUrl!, title: `Page ${page.pageNumber}: ${page.title}` })}
                             className="absolute inset-0 bg-black/40 text-white opacity-0 group-hover:opacity-100 flex items-center justify-center gap-1.5 font-bold text-xs rounded-2xl transition-opacity cursor-pointer"
                           >
                             <ZoomIn className="w-4 h-4" /> Full View
@@ -636,15 +1097,19 @@ export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
                             onClick={() => {
                               playChimeSound('pop');
                               setActiveColoringPage({
+                                pageId: page.id,
                                 title: `Page ${page.pageNumber}: ${page.title}`,
                                 pageNumber: page.pageNumber,
-                                imageUrl: page.imageUrl!,
+                                imageUrl: page.coloredImageUrl || page.imageUrl!,
                                 storyCaption: page.storyCaption,
                                 secondaryCaption: page.secondaryCaption,
                                 secondaryLanguage: page.secondaryLanguage || book.secondaryLanguage,
                                 numberLegend: page.numberLegend,
                                 activityMode: page.activityMode || book.activityMode,
                                 funFactOrTip: page.funFactOrTip,
+                                borderStyle: page.borderStyle || book.defaultBorderStyle || 'classic-double',
+                                placedStickers: page.placedStickers || [],
+                                voiceAudioUrl: page.voiceAudioUrl,
                               });
                             }}
                             className="flex items-center gap-1 px-2 py-0.5 rounded-lg bg-white border border-amber-200 text-[11px] font-bold text-gray-800 hover:scale-105 active:scale-95 transition-all cursor-pointer shadow-2xs"
@@ -721,6 +1186,20 @@ export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
                     </div>
                   )}
 
+                  {/* Read-Along Voice Recording & Player */}
+                  {onSaveVoiceAudio && (
+                    <div className="mb-2.5">
+                      <VoiceRecorderWidget
+                        pageNumber={page.pageNumber}
+                        initialAudioUrl={page.voiceAudioUrl}
+                        initialDuration={page.voiceAudioDuration}
+                        onSaveAudio={(audioUrl, dur) => onSaveVoiceAudio(page.id, audioUrl, dur)}
+                        onRemoveAudio={() => onSaveVoiceAudio(page.id, '', 0)}
+                        compact={true}
+                      />
+                    </div>
+                  )}
+
                   {/* Small Text Box: Coloring Suggestion or Fun Fact with Smooth Update Transition */}
                   <AnimatePresence mode="wait">
                     {page.funFactOrTip && (
@@ -754,6 +1233,7 @@ export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
                         onOpenFullStudio={() => {
                           playChimeSound('magic');
                           setActiveColoringPage({
+                            pageId: page.id,
                             title: `Page ${page.pageNumber}: ${page.title}`,
                             pageNumber: page.pageNumber,
                             imageUrl: page.imageUrl!,
@@ -763,6 +1243,9 @@ export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
                             numberLegend: page.numberLegend,
                             activityMode: page.activityMode || book.activityMode,
                             funFactOrTip: page.funFactOrTip,
+                            borderStyle: page.borderStyle || book.defaultBorderStyle || 'classic-double',
+                            placedStickers: page.placedStickers || [],
+                            voiceAudioUrl: page.voiceAudioUrl,
                           });
                         }}
                       />
@@ -776,15 +1259,19 @@ export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
                       onClick={() => {
                         playChimeSound('magic');
                         setActiveColoringPage({
+                          pageId: page.id,
                           title: `Page ${page.pageNumber}: ${page.title}`,
                           pageNumber: page.pageNumber,
-                          imageUrl: page.imageUrl!,
+                          imageUrl: page.coloredImageUrl || page.imageUrl!,
                           storyCaption: page.storyCaption,
                           secondaryCaption: page.secondaryCaption,
                           secondaryLanguage: page.secondaryLanguage || book.secondaryLanguage,
                           numberLegend: page.numberLegend,
                           activityMode: page.activityMode || book.activityMode,
                           funFactOrTip: page.funFactOrTip,
+                          borderStyle: page.borderStyle || book.defaultBorderStyle || 'classic-double',
+                          placedStickers: page.placedStickers || [],
+                          voiceAudioUrl: page.voiceAudioUrl,
                         });
                       }}
                       className="w-full mb-3 py-2 px-3 rounded-xl bg-linear-to-r from-amber-500 via-orange-500 to-amber-600 hover:from-amber-600 hover:to-orange-600 text-white text-xs font-black flex items-center justify-center gap-1.5 shadow-sm active:scale-95 transition-all cursor-pointer"
@@ -816,6 +1303,20 @@ export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
                       >
                         <Edit3 className="w-3.5 h-3.5" />
                         <span className="hidden sm:inline">Edit</span>
+                      </button>
+
+                      {/* Border Button */}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setBorderModalTargetPage(page);
+                          setIsBorderModalOpen(true);
+                          playChimeSound('pop');
+                        }}
+                        title="Customize page border"
+                        className="p-1.5 rounded-lg bg-gray-100 hover:bg-amber-100 text-gray-700 hover:text-amber-900 transition-colors cursor-pointer text-xs"
+                      >
+                        🖼️
                       </button>
                     </div>
 
@@ -935,6 +1436,7 @@ export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
                   onClick={() => {
                     playChimeSound('magic');
                     setActiveColoringPage({
+                      pageId: 'stickers',
                       title: book.stickerSheet!.title,
                       imageUrl: book.stickerSheet!.imageUrl,
                       storyCaption: `Cut along dashed lines with safety scissors and stick onto your colored pages!`,
@@ -989,9 +1491,7 @@ export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
                 type="button"
                 onClick={() => {
                   const stickerIdx = (book.coverImageUrl ? 1 : 0) + book.pages.length;
-                  setActivePageIndex(stickerIdx);
-                  setViewMode('flip');
-                  playChimeSound('pageflip');
+                  handleNavigatePage(stickerIdx);
                 }}
                 className="px-3.5 py-2.5 rounded-xl bg-amber-200/80 hover:bg-amber-300 border border-amber-400 text-amber-950 text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer"
                 title="Open stickers in Flip Book mode"
@@ -1003,8 +1503,124 @@ export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
           </div>
         </div>
       </section>
-        </div>
+
+      {/* BONUS ACTIVITIES & CRAFTS CENTER BANNER */}
+      {onOpenActivitiesModal && (
+        <section className="bg-linear-to-r from-amber-500 via-orange-500 to-amber-600 rounded-3xl p-6 sm:p-7 text-white shadow-md relative overflow-hidden text-left">
+          <div className="relative z-10 flex flex-col md:flex-row items-center justify-between gap-6">
+            <div className="space-y-2 max-w-xl">
+              <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/20 text-white text-xs font-bold backdrop-blur-xs">
+                <Compass className="w-3.5 h-3.5 text-amber-200" />
+                <span>Kid Puzzles, Science &amp; Cut-Out Crafts</span>
+              </div>
+              <h3 className="text-xl sm:text-2xl font-black uppercase tracking-tight" style={{ fontFamily: "'Fredoka', sans-serif" }}>
+                ⭐ {book.childName}'s Bonus Activity Hub ⭐
+              </h3>
+              <p className="text-xs sm:text-sm text-white/90 leading-relaxed">
+                Take a fun break between coloring pages! Explore our printable themed mazes, DIY cut-out bookmarks, bedroom door hangers, color mixing lab experiments, and story word searches.
+              </p>
+
+              {/* 4 Interactive Feature Badges */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1">
+                <div className="bg-white/15 backdrop-blur-xs rounded-xl p-2 text-center text-xs font-bold border border-white/20">
+                  🧭 Themed Maze
+                </div>
+                <div className="bg-white/15 backdrop-blur-xs rounded-xl p-2 text-center text-xs font-bold border border-white/20">
+                  ✂️ DIY Bookmarks
+                </div>
+                <div className="bg-white/15 backdrop-blur-xs rounded-xl p-2 text-center text-xs font-bold border border-white/20">
+                  🎨 Color Science Lab
+                </div>
+                <div className="bg-white/15 backdrop-blur-xs rounded-xl p-2 text-center text-xs font-bold border border-white/20">
+                  🔍 Word Search
+                </div>
+              </div>
+            </div>
+
+            <div className="shrink-0 flex flex-col items-center gap-2.5">
+              <button
+                type="button"
+                onClick={onOpenActivitiesModal}
+                className="px-6 py-3.5 rounded-2xl bg-white hover:bg-amber-50 text-amber-950 font-black text-sm shadow-lg hover:shadow-xl active:scale-95 transition-all flex items-center gap-2 cursor-pointer"
+              >
+                <Compass className="w-5 h-5 text-orange-600" />
+                <span>Open Activities &amp; Crafts!</span>
+              </button>
+              <span className="text-[11px] text-white/80 font-medium">
+                100% Printable &amp; PNG Downloadable
+              </span>
+            </div>
+          </div>
+        </section>
       )}
+
+      {/* SPECIAL INTERACTIVE FEATURES ROW: Photo-to-Line-Art & Master Certificate */}
+      <section className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        {/* Card 1: Child & Pet Photo-to-Line-Art */}
+        <div className="bg-linear-to-br from-rose-50 via-pink-50/60 to-amber-50/50 rounded-3xl border border-rose-200 p-5 sm:p-6 shadow-xs flex flex-col justify-between text-left">
+          <div>
+            <div className="flex items-center justify-between mb-3">
+              <span className="px-2.5 py-1 rounded-full bg-rose-500 text-white text-[10px] font-black uppercase tracking-wider flex items-center gap-1">
+                <Camera className="w-3 h-3" /> Child &amp; Pet Feature
+              </span>
+              <span className="text-xs font-bold text-rose-800 bg-rose-100 px-2 py-0.5 rounded-md">
+                100% Local Outline Filter
+              </span>
+            </div>
+            <h3 className="text-lg sm:text-xl font-black text-gray-900 mb-1.5" style={{ fontFamily: "'Fredoka', sans-serif" }}>
+              Star in the Book! 📸
+            </h3>
+            <p className="text-xs sm:text-sm text-gray-700 leading-relaxed mb-4">
+              Turn a picture of {book.childName} or a beloved family pet into a crisp black-and-white coloring page! Adjust line weight, contrast, and clean borders instantly.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setIsHeroModalOpen(true);
+              playChimeSound('sparkle');
+            }}
+            className="w-full py-2.5 px-4 rounded-xl bg-linear-to-r from-rose-500 to-pink-500 hover:from-rose-600 hover:to-pink-600 text-white text-xs font-black flex items-center justify-center gap-2 shadow-xs cursor-pointer transition-all active:scale-95"
+          >
+            <Camera className="w-4 h-4 text-pink-200" />
+            <span>Convert Photo to Line Art &amp; Add Page</span>
+          </button>
+        </div>
+
+        {/* Card 2: Coloring Master Certificate of Completion */}
+        <div className="bg-linear-to-br from-amber-50 via-yellow-50/60 to-orange-50/50 rounded-3xl border border-amber-300 p-5 sm:p-6 shadow-xs flex flex-col justify-between text-left">
+          <div>
+            <div className="flex items-center justify-between mb-3">
+              <span className="px-2.5 py-1 rounded-full bg-amber-500 text-white text-[10px] font-black uppercase tracking-wider flex items-center gap-1">
+                <Award className="w-3 h-3" /> Diploma of Achievement
+              </span>
+              <span className="text-xs font-bold text-amber-900 bg-amber-200/80 px-2 py-0.5 rounded-md">
+                Printable PDF
+              </span>
+            </div>
+            <h3 className="text-lg sm:text-xl font-black text-gray-900 mb-1.5" style={{ fontFamily: "'Fredoka', sans-serif" }}>
+              Coloring Master Certificate 🏆
+            </h3>
+            <p className="text-xs sm:text-sm text-gray-700 leading-relaxed mb-4">
+              Award {book.childName} a personalized Certificate of Achievement for completing this {book.theme} coloring adventure! Sign and print or download as a keepsake.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setIsCertificateModalOpen(true);
+              playChimeSound('fanfare');
+            }}
+            className="w-full py-2.5 px-4 rounded-xl bg-linear-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white text-xs font-black flex items-center justify-center gap-2 shadow-xs cursor-pointer transition-all active:scale-95"
+          >
+            <Award className="w-4 h-4 text-yellow-200" />
+            <span>Customize &amp; Print Award Certificate</span>
+          </button>
+        </div>
+      </section>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Lightbox / Zoom Modal */}
       {selectedPreviewImg && (
@@ -1068,8 +1684,66 @@ export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
           numberLegend={activeColoringPage.numberLegend}
           activityMode={activeColoringPage.activityMode}
           childName={book.childName}
+          borderStyle={activeColoringPage.borderStyle}
+          initialStickers={activeColoringPage.placedStickers}
+          voiceAudioUrl={activeColoringPage.voiceAudioUrl}
+          onSaveVoiceAudio={(audioUrl, dur) => {
+            if (activeColoringPage.pageId && onSaveVoiceAudio) {
+              onSaveVoiceAudio(activeColoringPage.pageId, audioUrl, dur);
+            }
+          }}
+          onSaveArtwork={(coloredDataUrl, stickers, border) => {
+            if (activeColoringPage.pageId && onSavePageArtwork) {
+              onSavePageArtwork(activeColoringPage.pageId, coloredDataUrl, stickers, border);
+            }
+          }}
         />
       )}
+
+      {/* Child & Pet Photo-to-Line-Art Modal */}
+      <PersonalizedHeroModal
+        isOpen={isHeroModalOpen}
+        onClose={() => setIsHeroModalOpen(false)}
+        childName={book.childName}
+        theme={book.theme}
+        onApplyHeroPage={(heroData) => {
+          onAddHeroPage?.(heroData);
+          setIsHeroModalOpen(false);
+        }}
+      />
+
+      {/* Completion Diploma Certificate Modal */}
+      <CertificateModal
+        isOpen={isCertificateModalOpen}
+        onClose={() => setIsCertificateModalOpen(false)}
+        book={book}
+        onUpdateCertificateDetails={onUpdateCertificate}
+      />
+
+      {/* Border Customization Modal */}
+      <BorderSelectorModal
+        isOpen={isBorderModalOpen}
+        onClose={() => {
+          setIsBorderModalOpen(false);
+          setBorderModalTargetPage(null);
+        }}
+        currentBorder={
+          borderModalTargetPage
+            ? borderModalTargetPage.borderStyle || book.defaultBorderStyle || 'classic-double'
+            : book.defaultBorderStyle || 'classic-double'
+        }
+        pageTitle={borderModalTargetPage ? borderModalTargetPage.title : undefined}
+        pageNumber={borderModalTargetPage ? borderModalTargetPage.pageNumber : undefined}
+        onSelectBorder={(border, applyToAll) => {
+          if (applyToAll || !borderModalTargetPage) {
+            onUpdateAllBorders?.(border);
+          } else {
+            onUpdatePageBorder?.(borderModalTargetPage.id, border);
+          }
+          setIsBorderModalOpen(false);
+          setBorderModalTargetPage(null);
+        }}
+      />
 
       {/* Save to Favorites Modal */}
       <FavoritesModal
@@ -1086,11 +1760,13 @@ export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
       <FilmStripNav
         book={book}
         viewMode={viewMode}
-        activePageIndex={activePageIndex}
+        activePageIndex={safeActiveIndex}
         onSelectSlide={(idx) => {
-          setActivePageIndex(idx);
+          handleNavigatePage(idx);
         }}
         onDownloadPdf={onDownloadPdf}
+        onOpenPrintPreview={onOpenPrintPreview}
+        onOpenPageReorder={onOpenPageReorder}
         isPreparingPdf={isPreparingPdf}
         pdfProgress={pdfProgress}
         isPdfBtnTooltipVisible={isPdfBtnTooltipVisible}

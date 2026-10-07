@@ -13,6 +13,8 @@ import {
   AlertCircle,
   Scissors,
   BookOpen,
+  Eye,
+  ArrowUpDown,
 } from 'lucide-react';
 import { ColoringBook } from '../types';
 import { playChimeSound } from '../utils/kidAudio';
@@ -37,6 +39,8 @@ interface FilmStripNavProps {
   activePageIndex?: number;
   onSelectSlide?: (slideIndex: number) => void;
   onDownloadPdf?: () => void;
+  onOpenPrintPreview?: () => void;
+  onOpenPageReorder?: () => void;
   isPreparingPdf?: boolean;
   pdfProgress?: number;
   isPdfBtnTooltipVisible?: boolean;
@@ -51,6 +55,8 @@ export const FilmStripNav: React.FC<FilmStripNavProps> = ({
   activePageIndex = 0,
   onSelectSlide,
   onDownloadPdf,
+  onOpenPrintPreview,
+  onOpenPageReorder,
   isPreparingPdf = false,
   pdfProgress = 0,
   isPdfBtnTooltipVisible = false,
@@ -254,6 +260,32 @@ export const FilmStripNav: React.FC<FilmStripNavProps> = ({
             </div>
 
             <div className="flex items-center gap-2">
+              {/* Arrange Story Sequence Button */}
+              {onOpenPageReorder && (
+                <button
+                  type="button"
+                  onClick={onOpenPageReorder}
+                  className="px-2.5 py-1.5 rounded-xl bg-orange-50 hover:bg-orange-100 text-orange-900 border border-orange-200 text-xs font-bold transition-all hover:scale-102 active:scale-95 cursor-pointer flex items-center gap-1.5"
+                  title="Reorder scenes and arrange your story sequence"
+                >
+                  <ArrowUpDown className="w-3.5 h-3.5 text-orange-600" />
+                  <span className="text-[11px] hidden sm:inline">Arrange Story</span>
+                </button>
+              )}
+
+              {/* Print Preview Button */}
+              {onOpenPrintPreview && (
+                <button
+                  type="button"
+                  onClick={onOpenPrintPreview}
+                  className="px-2.5 py-1.5 rounded-xl bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 text-xs font-bold transition-all hover:scale-102 active:scale-95 cursor-pointer flex items-center gap-1.5"
+                  title="Open full-screen Print Preview modal"
+                >
+                  <Eye className="w-3.5 h-3.5 text-amber-700" />
+                  <span className="text-[11px] hidden sm:inline">Print Preview</span>
+                </button>
+              )}
+
               {/* Optional PDF Download Button in Filmstrip for complete bottom-bar control */}
               {onDownloadPdf && (
                 <div className="relative inline-flex items-center">
@@ -265,13 +297,19 @@ export const FilmStripNav: React.FC<FilmStripNavProps> = ({
                     onFocus={() => setIsPdfBtnTooltipVisible?.(true)}
                     onBlur={() => setIsPdfBtnTooltipVisible?.(false)}
                     onClick={onDownloadPdf}
-                    className={`group relative overflow-hidden px-3 py-1.5 rounded-xl bg-linear-to-r from-amber-500 via-orange-500 to-amber-600 hover:from-amber-600 hover:to-orange-600 text-white text-xs font-bold shadow-xs transition-all duration-200 hover:scale-102 active:scale-95 cursor-pointer disabled:opacity-90 flex items-center gap-1.5 select-none ${
+                    className={`group relative overflow-hidden px-3.5 py-1.5 rounded-xl bg-linear-to-r from-amber-500 via-orange-500 to-amber-600 hover:from-amber-500 hover:via-orange-500 hover:to-amber-500 text-white text-xs font-bold shadow-xs hover:shadow-lg hover:shadow-orange-500/35 transition-all duration-300 ease-out hover:scale-105 active:scale-95 cursor-pointer disabled:opacity-90 flex items-center gap-1.5 select-none ${
                       isBookGenerationFinished && !isGeneratingBook && !isPreparingPdf
-                        ? 'ring-2 ring-amber-400'
+                        ? 'ring-2 ring-amber-400 ring-offset-1 ring-offset-white'
                         : ''
                     }`}
                     aria-label="Export as PDF"
                   >
+                    {/* Subtle luminous shimmer animation on hover */}
+                    <span
+                      aria-hidden="true"
+                      className="absolute inset-0 -translate-x-full group-hover:translate-x-full transition-transform duration-700 ease-out bg-linear-to-r from-transparent via-white/30 to-transparent pointer-events-none"
+                    />
+
                     {isPreparingPdf ? (
                       <ProgressRing
                         size={15}
@@ -282,9 +320,9 @@ export const FilmStripNav: React.FC<FilmStripNavProps> = ({
                         className="relative z-20"
                       />
                     ) : (
-                      <Download className="w-3.5 h-3.5 shrink-0 relative z-20" />
+                      <Download className="w-3.5 h-3.5 shrink-0 relative z-20 transition-transform duration-200 group-hover:translate-y-0.5" />
                     )}
-                    <span className="relative z-20 text-[11px]">
+                    <span className="relative z-20 text-[11px] tracking-wide">
                       {isPreparingPdf ? 'Preparing PDF...' : 'Download PDF'}
                     </span>
                   </button>
