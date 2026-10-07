@@ -33,6 +33,7 @@ import { DEFAULT_COLORING_BOOK, createSampleLineArtSvg, createSampleStickersSvg 
 import { createThematicCoverSvg, buildThematicCoverAiPrompt } from './utils/coverIllustrationGenerator';
 import { generateColoringBookPdf } from './utils/pdfGenerator';
 import { playChimeSound } from './utils/kidAudio';
+import { escapeHtml } from './utils/security';
 import {
   saveBookToLocalStorage,
   getAutosavedSession,
@@ -85,17 +86,38 @@ export default function App() {
   const [isBookGenerationFinished, setIsBookGenerationFinished] = useState(true);
   const [isPdfBtnTooltipVisible, setIsPdfBtnTooltipVisible] = useState(false);
 
-  // On initial page load: check if auto-saved session exists in localStorage
+  // On initial page load: check if auto-saved session exists in persistent IndexedDB
   useEffect(() => {
-    const saved = getAutosavedSession();
-    if (saved && saved.book && Array.isArray(saved.book.pages) && saved.book.pages.length > 0) {
-      setAutosavedSession(saved);
-      // Show restore banner if saved session is present
-      setShowRestoreBanner(true);
-    }
+    const checkSaved = () => {
+      const saved = getAutosavedSession();
+      if (saved && saved.book && Array.isArray(saved.book.pages) && saved.book.pages.length > 0) {
+        setAutosavedSession(saved);
+        setShowRestoreBanner(true);
+      }
+      const history = getSessionHistory();
+      if (history.length > 0) {
+        setHistoryBooks(history);
+      }
+    };
+    checkSaved();
+
+    const handleHistoryUpdate = (e: any) => {
+      if (e.detail && Array.isArray(e.detail) && e.detail.length > 0) {
+        setHistoryBooks(e.detail);
+      }
+    };
+
+    window.addEventListener('coloring_book_storage_ready', checkSaved);
+    window.addEventListener('coloring_book_autosave_updated', checkSaved);
+    window.addEventListener('coloring_book_session_history_updated', handleHistoryUpdate);
+    return () => {
+      window.removeEventListener('coloring_book_storage_ready', checkSaved);
+      window.removeEventListener('coloring_book_autosave_updated', checkSaved);
+      window.removeEventListener('coloring_book_session_history_updated', handleHistoryUpdate);
+    };
   }, []);
 
-  // Automatically save current book state to browser localStorage whenever a change is made
+  // Automatically save current book state to persistent IndexedDB whenever a change is made
   useEffect(() => {
     if (book && book.id) {
       saveBookToLocalStorage(book);
@@ -199,39 +221,50 @@ export default function App() {
             ? "Intricate coloring book page for older children, intricate patterns for older children, detailed crisp black line art, decorative zentangles, ornate background scenery, complex detailed coloring sections, pure white background"
             : "Children's coloring book page, bold thick crisp black outlines, pure white background, clear recognizable shapes, playful fun details, large open shapes for coloring";
 
+        const isSpanishSecondary = targetSecondaryLang === 'es';
         const defaultScenes = [
           {
             title: `The Journey Begins with ${options.theme}`,
             caption: `${options.childName}'s great adventure begins today with happy smiles!`,
-            secCaption: `¡La gran aventura de ${options.childName} comienza hoy con sonrisas felices!`,
+            secCaption: isSpanishSecondary
+              ? `¡La gran aventura de ${options.childName} comienza hoy con sonrisas felices!`
+              : undefined,
             tip: `Coloring Tip: Give the character a bright sunshine yellow smile!`,
             prompt: `${promptStylePrefix}, cute friendly ${options.theme} waving hello`,
           },
           {
             title: `Exploring the ${options.theme} World`,
             caption: `Look at all the magical discoveries waiting to be explored!`,
-            secCaption: `¡Mira todos los descubrimientos mágicos esperando ser explorados!`,
+            secCaption: isSpanishSecondary
+              ? `¡Mira todos los descubrimientos mágicos esperando ser explorados!`
+              : undefined,
             tip: `Fun Fact: Exploring new places helps your imagination grow as tall as a giant!`,
             prompt: `${promptStylePrefix}, ${options.theme} exploring with cute gadgets`,
           },
           {
             title: `A Playful ${options.theme} Friend`,
             caption: `Sharing snacks and playing games with good friends!`,
-            secCaption: `¡Compartiendo meriendas y jugando juegos con buenos amigos!`,
+            secCaption: isSpanishSecondary
+              ? `¡Compartiendo meriendas y jugando juegos con buenos amigos!`
+              : undefined,
             tip: `Coloring Tip: Try coloring the background with cool sky blues and grass greens!`,
             prompt: `${promptStylePrefix}, ${options.theme} having a picnic or playing games with friends`,
           },
           {
             title: `The Big Exciting Discovery`,
             caption: `Look up high! A wonderful surprise shines bright in the sky!`,
-            secCaption: `¡Mira hacia arriba! ¡Una maravillosa sorpresa brilla en el cielo!`,
+            secCaption: isSpanishSecondary
+              ? `¡Mira hacia arriba! ¡Una maravillosa sorpresa brilla en el cielo!`
+              : undefined,
             tip: `Fun Fact: Stars in outer space can twinkle in shades of red, white, and blue!`,
             prompt: `${promptStylePrefix}, ${options.theme} discovering a glowing treasure or starry prize`,
           },
           {
             title: `Celebration & Sweet Dreams`,
             caption: `A happy celebration for ${options.childName}'s brave adventure!`,
-            secCaption: `¡Una alegre celebración para la valiente aventura de ${options.childName}!`,
+            secCaption: isSpanishSecondary
+              ? `¡Una alegre celebración para la valiente aventura de ${options.childName}!`
+              : undefined,
             tip: `Coloring Tip: Use every color in your crayon box to make the confetti burst!`,
             prompt: `${promptStylePrefix}, ${options.theme} celebrating with confetti, balloons, and smiling stars`,
           },
@@ -244,7 +277,7 @@ export default function App() {
             pageNumber: pIdx + 1,
             sceneTitle: scene.title,
             storyCaption: scene.caption,
-            secondaryCaption: targetSecondaryLang ? scene.secCaption : undefined,
+            secondaryCaption: scene.secCaption,
             funFactOrTip: scene.tip,
             imagePrompt: scene.prompt,
             numberLegend: targetActivityMode === 'color-by-numbers' ? defaultLegend : undefined,
@@ -360,6 +393,7 @@ export default function App() {
         );
 
         let pageImgUrl = '';
+        let pageErrorMsg = '';
         try {
           const imgRes = await fetch('/api/generate-image', {
             method: 'POST',
@@ -374,22 +408,27 @@ export default function App() {
           const imgData = await imgRes.json();
           if (imgData.success && imgData.imageUrl) {
             pageImgUrl = imgData.imageUrl;
+          } else {
+            pageErrorMsg = imgData.error || 'Drawing could not be generated';
           }
-        } catch (pageGenErr) {
-          console.warn(`Page ${pageNum} generation failed, using line-art fallback:`, pageGenErr);
+        } catch (pageGenErr: any) {
+          console.warn(`Page ${pageNum} generation failed:`, pageGenErr);
+          pageErrorMsg = 'Network error while generating page art';
         }
 
-        if (!pageImgUrl) {
-          const sampleTypes = ['space_dino_1', 'space_dino_2', 'space_dino_3', 'space_dino_4', 'space_dino_5'];
-          pageImgUrl = createSampleLineArtSvg(sampleTypes[i % sampleTypes.length], `PAGE ${pageNum}: ${newPages[i].title}`);
-        }
-
-        // Update this page in book state
+        // Update this page in book state honestly: completed if imageUrl, error if failed
         setBook((prev) => ({
           ...prev,
           pages: prev.pages.map((p, idx) =>
             idx === i
-              ? { ...p, imageUrl: pageImgUrl, status: 'completed' }
+              ? pageImgUrl
+                ? { ...p, imageUrl: pageImgUrl, status: 'completed', errorMessage: undefined }
+                : {
+                    ...p,
+                    imageUrl: undefined,
+                    status: 'error',
+                    errorMessage: pageErrorMsg || 'Image generation failed. Click Retry to redraw this page.',
+                  }
               : p
           ),
         }));
@@ -444,21 +483,25 @@ export default function App() {
       });
 
       const data = await res.json();
-      let newUrl = '';
       if (data.success && data.imageUrl) {
-        newUrl = data.imageUrl;
+        setBook((prev) => ({
+          ...prev,
+          pages: prev.pages.map((p) =>
+            p.id === pageId
+              ? { ...p, imageUrl: data.imageUrl, status: 'completed', errorMessage: undefined, resolution: resolution || p.resolution }
+              : p
+          ),
+        }));
       } else {
-        newUrl = createSampleLineArtSvg('space_dino_2', `PAGE ${pageToRegen.pageNumber}`);
+        setBook((prev) => ({
+          ...prev,
+          pages: prev.pages.map((p) =>
+            p.id === pageId
+              ? { ...p, status: 'error', errorMessage: data?.error || 'Could not redraw page. Click Retry.' }
+              : p
+          ),
+        }));
       }
-
-      setBook((prev) => ({
-        ...prev,
-        pages: prev.pages.map((p) =>
-          p.id === pageId
-            ? { ...p, imageUrl: newUrl, status: 'completed', resolution: resolution || p.resolution }
-            : p
-        ),
-      }));
     } catch (err) {
       console.error('Failed to regenerate page:', err);
       setBook((prev) => ({
@@ -741,7 +784,7 @@ export default function App() {
         });
 
         try {
-          const planRes = await fetch('/api/generate-plan', {
+          const planRes = await fetch('/api/plan-book', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -755,22 +798,23 @@ export default function App() {
             }),
           });
           const planData = await planRes.json();
-          if (planData.success && Array.isArray(planData.pages)) {
-            pagePrompts = planData.pages.map((p: any) => p.imagePrompt);
-            pageTitles = planData.pages.map((p: any) => p.sceneTitle);
+          const rawPages = planData.plan?.pages || planData.pages;
+          if (planData.success && Array.isArray(rawPages)) {
+            pagePrompts = rawPages.map((p: any) => p.imagePrompt);
+            pageTitles = rawPages.map((p: any) => p.sceneTitle);
 
             setBook((prev) => ({
               ...prev,
               theme: targetTheme,
-              title: planData.bookTitle || `${prev.childName}'s ${targetTheme} Coloring Book`,
-              subtitle: planData.subtitle || prev.subtitle,
-              coverPrompt: planData.coverPrompt || prev.coverPrompt,
+              title: planData.plan?.bookTitle || planData.bookTitle || `${prev.childName}'s ${targetTheme} Coloring Book`,
+              subtitle: planData.plan?.subtitle || planData.subtitle || prev.subtitle,
+              coverPrompt: planData.plan?.coverPrompt || planData.coverPrompt || prev.coverPrompt,
               pages: prev.pages.map((p, idx) => ({
                 ...p,
-                title: planData.pages[idx]?.sceneTitle || p.title,
-                storyCaption: planData.pages[idx]?.storyCaption || p.storyCaption,
-                secondaryCaption: planData.pages[idx]?.secondaryCaption || p.secondaryCaption,
-                prompt: planData.pages[idx]?.imagePrompt || p.prompt,
+                title: rawPages[idx]?.sceneTitle || p.title,
+                storyCaption: rawPages[idx]?.storyCaption || p.storyCaption,
+                secondaryCaption: rawPages[idx]?.secondaryCaption || p.secondaryCaption,
+                prompt: rawPages[idx]?.imagePrompt || p.prompt,
                 status: 'generating',
               })),
             }));
@@ -799,6 +843,7 @@ export default function App() {
         }));
 
         let newUrl = '';
+        let batchErrorMsg = '';
         try {
           const res = await fetch('/api/generate-image', {
             method: 'POST',
@@ -813,19 +858,22 @@ export default function App() {
           const data = await res.json();
           if (data.success && data.imageUrl) {
             newUrl = data.imageUrl;
+          } else {
+            batchErrorMsg = data.error || 'Failed to redraw page';
           }
         } catch (err) {
-          console.warn('Batch regen image API error, using fallback:', err);
-        }
-
-        if (!newUrl) {
-          newUrl = createSampleLineArtSvg('space_dino_2', `PAGE ${i + 1}`);
+          console.warn('Batch regen image API error:', err);
+          batchErrorMsg = 'Network error during batch generation';
         }
 
         setBook((prev) => ({
           ...prev,
           pages: prev.pages.map((p, idx) =>
-            idx === i ? { ...p, imageUrl: newUrl, status: 'completed' } : p
+            idx === i
+              ? newUrl
+                ? { ...p, imageUrl: newUrl, status: 'completed', errorMessage: undefined }
+                : { ...p, imageUrl: undefined, status: 'error', errorMessage: batchErrorMsg || 'Batch draw failed. Click Retry.' }
+              : p
           ),
         }));
       }
@@ -903,7 +951,7 @@ export default function App() {
       <!DOCTYPE html>
       <html>
         <head>
-          <title>Print Stickers - ${book.childName}</title>
+          <title>Print Stickers - ${escapeHtml(book.childName)}</title>
           <style>
             @page { size: auto; margin: 10mm; }
             body { margin: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; font-family: system-ui, sans-serif; }
@@ -976,7 +1024,7 @@ export default function App() {
     } catch (e) {}
   };
 
-  // Restore session from localStorage
+  // Restore session from persistent IndexedDB
   const handleRestoreLastSession = () => {
     if (!autosavedSession || !autosavedSession.book) return;
     setBook(autosavedSession.book);

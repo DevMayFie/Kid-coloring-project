@@ -666,6 +666,30 @@ export const FlipBookReader: React.FC<FlipBookReaderProps> = ({
                               <p className="text-[11px] text-gray-500">Creating line art outlines</p>
                             </div>
                           </motion.div>
+                        ) : page.status === 'error' ? (
+                          <motion.div
+                            key={`error-${page.id}`}
+                            initial={{ opacity: 0, scale: 0.95 }}
+                            animate={{ opacity: 1, scale: 1 }}
+                            exit={{ opacity: 0 }}
+                            className="text-center p-5 flex flex-col items-center justify-center gap-2 max-w-xs mx-auto"
+                          >
+                            <div className="w-12 h-12 rounded-full bg-rose-100 flex items-center justify-center text-rose-600 mb-1">
+                              <AlertCircle className="w-7 h-7" />
+                            </div>
+                            <p className="text-sm font-bold text-gray-900">Drawing Incomplete</p>
+                            <p className="text-xs text-gray-600 leading-relaxed">
+                              {page.errorMessage || 'Could not generate this page image.'}
+                            </p>
+                            <button
+                              type="button"
+                              onClick={() => onRegeneratePage(page.id)}
+                              className="mt-2 px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs flex items-center gap-1.5 shadow-sm active:scale-95 cursor-pointer transition-all"
+                            >
+                              <RefreshCw className="w-3.5 h-3.5" />
+                              <span>Retry Drawing Page</span>
+                            </button>
+                          </motion.div>
                         ) : (
                           <motion.div
                             key={`empty-${page.id}`}
@@ -673,10 +697,17 @@ export const FlipBookReader: React.FC<FlipBookReaderProps> = ({
                             animate={{ opacity: 1 }}
                             exit={{ opacity: 0 }}
                             transition={{ duration: 0.2 }}
-                            className="text-center p-4"
+                            className="text-center p-4 flex flex-col items-center justify-center gap-2"
                           >
-                            <AlertCircle className="w-8 h-8 text-gray-400 mx-auto mb-2" />
+                            <AlertCircle className="w-8 h-8 text-gray-400 mb-1" />
                             <p className="text-xs font-bold text-gray-800">No Image Yet</p>
+                            <button
+                              type="button"
+                              onClick={() => onRegeneratePage(page.id)}
+                              className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold cursor-pointer"
+                            >
+                              Draw This Page
+                            </button>
                           </motion.div>
                         )}
                       </AnimatePresence>
@@ -761,6 +792,11 @@ export const FlipBookReader: React.FC<FlipBookReaderProps> = ({
                       {page.status === 'completed' && (
                         <span className="text-xs font-semibold text-emerald-700 flex items-center gap-1 bg-emerald-50 px-2.5 py-0.5 rounded-full border border-emerald-200">
                           <Check className="w-3.5 h-3.5" /> Ready to Color
+                        </span>
+                      )}
+                      {page.status === 'error' && !isRegen && (
+                        <span className="text-xs font-semibold text-rose-700 flex items-center gap-1 bg-rose-50 px-2.5 py-0.5 rounded-full border border-rose-200">
+                          <AlertCircle className="w-3.5 h-3.5" /> Generation Failed
                         </span>
                       )}
                     </div>
@@ -908,10 +944,14 @@ export const FlipBookReader: React.FC<FlipBookReaderProps> = ({
                         <button
                           onClick={() => onRegeneratePage(page.id)}
                           disabled={isRegen}
-                          className="px-3 py-2 rounded-xl bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200 text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
+                          className={`px-3 py-2 rounded-xl text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50 cursor-pointer transition-colors ${
+                            page.status === 'error'
+                              ? 'bg-rose-50 hover:bg-rose-100 text-rose-800 border border-rose-300'
+                              : 'bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200'
+                          }`}
                         >
                           <RefreshCw className={`w-3.5 h-3.5 ${isRegen ? 'animate-spin' : ''}`} />
-                          <span>{isRegen ? 'Redrawing...' : 'Regenerate'}</span>
+                          <span>{isRegen ? 'Redrawing...' : page.status === 'error' ? 'Retry Drawing' : 'Regenerate'}</span>
                         </button>
 
                         <button

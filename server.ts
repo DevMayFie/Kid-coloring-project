@@ -1,6 +1,7 @@
 import express from 'express';
 import path from 'path';
 import dotenv from 'dotenv';
+import rateLimit from 'express-rate-limit';
 import { GoogleGenAI, Type } from '@google/genai';
 import { createServer as createViteServer } from 'vite';
 import {
@@ -14,7 +15,66 @@ dotenv.config();
 const app = express();
 const PORT = 3000;
 
-app.use(express.json({ limit: '50mb' }));
+// Respect Cloud Run / reverse-proxy X-Forwarded-For headers
+app.set('trust proxy', 1);
+
+app.use(express.json({ limit: '8mb' }));
+
+// Per-IP rate limiter for heavy image generation (protecting Gemini Pro & Flash image quota)
+const imageRateLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000, // 10 minutes
+  max: 30, // Limit each IP to 30 image requests per window
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    error: 'Image generation rate limit reached. Please wait a few minutes before requesting more pages.',
+  },
+});
+
+// Per-IP rate limiter for chat interactions (preventing proxy abuse)
+const chatRateLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000, // 10 minutes
+  max: 40, // Limit each IP to 40 chat messages per window
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    error: 'Chat message rate limit reached. Please wait a few minutes before sending more messages.',
+  },
+});
+
+// Per-IP rate limiter for book storyboard planning
+const planRateLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000, // 10 minutes
+  max: 25, // Limit each IP to 25 book plans per window
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    error: 'Book planning rate limit reached. Please wait a few minutes before creating a new book.',
+  },
+});
+
+function isSafetyOrBadRequestError(err: any): boolean {
+  const msg = (err?.message || '').toLowerCase();
+  const status = err?.status || err?.statusCode || 0;
+  return (
+    status === 400 ||
+    msg.includes('safety') ||
+    msg.includes('blocked') ||
+    msg.includes('harmful') ||
+    msg.includes('prohibited') ||
+    msg.includes('violate') ||
+    msg.includes('invalid argument') ||
+    msg.includes('content policy')
+  );
+}
+
+function sanitizeSafeString(str: any, maxLen = 100): string {
+  if (typeof str !== 'string') return '';
+  return str.replace(/<[^>]*>?/gm, '').trim().slice(0, maxLen);
+}
 
 // Lazy initialization of GoogleGenAI
 let aiClient: GoogleGenAI | null = null;
@@ -44,20 +104,18 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// Endpoint: Plan distinct coloring pages for a theme and child name
-app.post('/api/plan-book', async (req, res) => {
+// Handler for both /api/plan-book and /api/generate-plan
+const handlePlanBook: express.RequestHandler = async (req, res) => {
   try {
-    const {
-      theme = 'space dinosaurs',
-      childName = 'Little Explorer',
-      customTitle = '',
-      dedicationAuthor = '',
-      userNotes = '',
-      pageCount = 5,
-      difficulty = 'standard',
-      activityMode = 'standard',
-      secondaryLanguage = '',
-    } = req.body;
+    const theme = sanitizeSafeString(req.body?.theme, 100) || 'space dinosaurs';
+    const childName = sanitizeSafeString(req.body?.childName, 40) || 'Little Explorer';
+    const customTitle = sanitizeSafeString(req.body?.customTitle, 100);
+    const dedicationAuthor = sanitizeSafeString(req.body?.dedicationAuthor, 60);
+    const userNotes = sanitizeSafeString(req.body?.userNotes, 250);
+    const pageCount = req.body?.pageCount;
+    const difficulty = req.body?.difficulty || 'standard';
+    const activityMode = req.body?.activityMode || 'standard';
+    const secondaryLanguage = sanitizeSafeString(req.body?.secondaryLanguage, 15);
 
     const validPageCount = Math.max(1, Math.min(12, Number(pageCount) || 5));
     const explicitTitle = typeof customTitle === 'string' ? customTitle.trim() : '';
@@ -176,6 +234,12 @@ CRITICAL RULES:
         config: schemaConfig,
       });
     } catch (primaryErr: any) {
+      if (isSafetyOrBadRequestError(primaryErr)) {
+        return res.status(400).json({
+          success: false,
+          error: 'This theme was flagged by content safety filters. Please try another kid-friendly theme.',
+        });
+      }
       console.warn('gemini-3.8-flash planning high demand / error, attempting fallback to gemini-3.1-flash-lite:', primaryErr?.message);
       response = await ai.models.generateContent({
         model: 'gemini-3.1-flash-lite',
@@ -188,15 +252,29 @@ CRITICAL RULES:
     if (explicitTitle) {
       parsed.bookTitle = explicitTitle;
     }
-    return res.json({ success: true, plan: parsed });
+    // Return both formats so legacy or direct callers receive expected structure
+    return res.json({
+      success: true,
+      plan: parsed,
+      pages: parsed.pages || [],
+      bookTitle: parsed.bookTitle,
+      subtitle: parsed.subtitle,
+      coverPrompt: parsed.coverPrompt,
+    });
   } catch (error: any) {
     console.error('Error planning book:', error);
+    const safeError = isSafetyOrBadRequestError(error)
+      ? 'Theme was flagged by content safety filters. Please choose another fun topic.'
+      : 'Failed to create coloring book outline. Please try again.';
     return res.status(500).json({
       success: false,
-      error: error.message || 'Failed to generate coloring book plan',
+      error: safeError,
     });
   }
-});
+};
+
+app.post('/api/plan-book', planRateLimiter, handlePlanBook);
+app.post('/api/generate-plan', planRateLimiter, handlePlanBook);
 
 // Endpoint: AI-powered creative trending theme inspiration based on child's name
 app.post('/api/inspire-themes', async (req, res) => {
@@ -314,19 +392,20 @@ Guidelines:
   }
 });
 
-// Endpoint: Generate thick-line art image using gemini-3-pro-image-preview
-app.post('/api/generate-image', async (req, res) => {
+// Endpoint: Generate thick-line art image using gemini-3-pro-image-preview with safety guardrails
+app.post('/api/generate-image', imageRateLimiter, async (req, res) => {
   try {
+    const rawPrompt = typeof req.body?.prompt === 'string' ? req.body.prompt.trim().slice(0, 700) : '';
     const {
-      prompt,
       imageSize = '1K', // "1K", "2K", or "4K"
       aspectRatio = '3:4', // 3:4 is standard portrait for printable pages
       difficulty = 'standard',
       activityMode = 'standard',
+      modelPreference = 'auto', // 'fast' (gemini-3.1-flash-image) | 'pro' (gemini-3-pro-image)
     } = req.body;
 
-    if (!prompt) {
-      return res.status(400).json({ error: 'Prompt is required' });
+    if (!rawPrompt) {
+      return res.status(400).json({ success: false, error: 'A valid coloring prompt is required.' });
     }
 
     const ai = getGenAI();
@@ -349,16 +428,18 @@ app.post('/api/generate-image', async (req, res) => {
     }
 
     // Ensure the prompt enforces clean, printable black-and-white thick line art matching difficulty
-    const enhancedPrompt = `${prompt}. ${difficultyDirective} ${activityDirective} Completely pure clean white paper background, absolutely zero gray shading, zero halftone dots, zero crosshatching, no grayscale, no color fills, high contrast black-and-white line drawing suitable for printing.`;
+    const enhancedPrompt = `${rawPrompt}. ${difficultyDirective} ${activityDirective} Completely pure clean white paper background, absolutely zero gray shading, zero halftone dots, zero crosshatching, no grayscale, no color fills, high contrast black-and-white line drawing suitable for printing.`;
 
     const validSizes = ['1K', '2K', '4K'];
     const chosenSize = validSizes.includes(imageSize) ? imageSize : '1K';
 
-    // Call gemini-3-pro-image or fallback to gemini-3.1-flash-image
+    // Model selection: if fast requested or 1K default without 4K, can use flash for speed & unit economics
+    const primaryModel = modelPreference === 'fast' ? 'gemini-3.1-flash-image' : 'gemini-3-pro-image';
+
     let response;
     try {
       response = await ai.models.generateContent({
-        model: 'gemini-3-pro-image',
+        model: primaryModel,
         contents: {
           parts: [{ text: enhancedPrompt }],
         },
@@ -370,10 +451,21 @@ app.post('/api/generate-image', async (req, res) => {
         },
       });
     } catch (primaryErr: any) {
-      console.warn('gemini-3-pro-image call encountered issue, attempting gemini-3.1-flash-image fallback:', primaryErr?.message);
-      // Fallback to gemini-3.1-flash-image
+      // If prompt violated content policy or safety filters, DO NOT retry on secondary model!
+      if (isSafetyOrBadRequestError(primaryErr)) {
+        console.warn('Image prompt flagged by safety filter, aborting retry:', primaryErr?.message);
+        return res.status(400).json({
+          success: false,
+          error: 'This scene was flagged by content safety filters. Please try a different kid-friendly idea.',
+          isSafetyBlocked: true,
+        });
+      }
+
+      console.warn(`${primaryModel} call encountered issue, attempting secondary fallback:`, primaryErr?.message);
+      // Only fallback on transient network/overload errors
+      const fallbackModel = primaryModel === 'gemini-3-pro-image' ? 'gemini-3.1-flash-image' : 'gemini-3-pro-image';
       response = await ai.models.generateContent({
-        model: 'gemini-3.1-flash-image',
+        model: fallbackModel,
         contents: {
           parts: [{ text: enhancedPrompt }],
         },
@@ -408,19 +500,22 @@ app.post('/api/generate-image', async (req, res) => {
     });
   } catch (error: any) {
     console.error('Error generating image:', error);
+    const safeErrorMsg = isSafetyOrBadRequestError(error)
+      ? 'This scene was flagged by content safety filters. Please try a different kid-friendly idea.'
+      : 'Drawing generation is temporarily unavailable. Please try again.';
     return res.status(500).json({
       success: false,
-      error: error.message || 'Failed to generate coloring page image',
+      error: safeErrorMsg,
     });
   }
 });
 
 // Endpoint: Generate specialized thematic cover illustration accompanying child's name
-app.post('/api/generate-cover', async (req, res) => {
+app.post('/api/generate-cover', imageRateLimiter, async (req, res) => {
   try {
+    const rawTheme = sanitizeSafeString(req.body?.theme, 100) || 'space dinosaurs';
+    const rawChildName = sanitizeSafeString(req.body?.childName, 40) || 'Explorer';
     const {
-      theme = 'space dinosaurs',
-      childName = 'Explorer',
       prompt,
       imageSize = '1K',
       aspectRatio = '3:4',
@@ -434,7 +529,7 @@ app.post('/api/generate-cover', async (req, res) => {
 
     // If user requested vector illustration or no AI key
     if (forceVector || !process.env.GEMINI_API_KEY) {
-      const vectorSvg = createThematicCoverSvg(theme, childName, difficulty, styleVariant);
+      const vectorSvg = createThematicCoverSvg(rawTheme, rawChildName, difficulty, styleVariant);
       return res.json({
         success: true,
         imageUrl: vectorSvg,
@@ -443,7 +538,7 @@ app.post('/api/generate-cover', async (req, res) => {
       });
     }
 
-    const enhancedPrompt = prompt || buildThematicCoverAiPrompt(theme, childName, difficulty);
+    const enhancedPrompt = prompt ? sanitizeSafeString(prompt, 700) : buildThematicCoverAiPrompt(rawTheme, rawChildName, difficulty);
     let imageUrl = '';
 
     try {
@@ -463,6 +558,16 @@ app.post('/api/generate-cover', async (req, res) => {
           },
         });
       } catch (primaryErr: any) {
+        if (isSafetyOrBadRequestError(primaryErr)) {
+          console.warn('Cover prompt flagged by safety filter, using instant vector art');
+          const vectorSvg = createThematicCoverSvg(rawTheme, rawChildName, difficulty, styleVariant);
+          return res.json({
+            success: true,
+            imageUrl: vectorSvg,
+            resolution: chosenSize,
+            isVectorIllustration: true,
+          });
+        }
         console.warn('gemini-3-pro-image cover failed, trying gemini-3.1-flash-image fallback:', primaryErr?.message);
         response = await ai.models.generateContent({
           model: 'gemini-3.1-flash-image',
@@ -500,7 +605,7 @@ app.post('/api/generate-cover', async (req, res) => {
     }
 
     // High quality instant thematic vector illustration fallback
-    const vectorSvg = createThematicCoverSvg(theme, childName, difficulty, styleVariant);
+    const vectorSvg = createThematicCoverSvg(rawTheme, rawChildName, difficulty, styleVariant);
     return res.json({
       success: true,
       imageUrl: vectorSvg,
@@ -510,32 +615,40 @@ app.post('/api/generate-cover', async (req, res) => {
   } catch (error: any) {
     console.error('Error in /api/generate-cover:', error);
     const vectorSvg = createThematicCoverSvg(
-      req.body?.theme || 'space dinosaurs',
-      req.body?.childName || 'Explorer'
+      sanitizeSafeString(req.body?.theme, 100) || 'space dinosaurs',
+      sanitizeSafeString(req.body?.childName, 40) || 'Explorer'
     );
     return res.json({
       success: true,
       imageUrl: vectorSvg,
       isVectorIllustration: true,
-      errorNotice: error.message,
     });
   }
 });
 
-// Endpoint: Convert child or pet photo into personalized coloring book line-art
-app.post('/api/photo-to-line-art', async (req, res) => {
+// Endpoint: Convert child or pet photo into personalized coloring book line-art with strict size caps
+app.post('/api/photo-to-line-art', imageRateLimiter, async (req, res) => {
   try {
     const {
       photoBase64,
       subjectType = 'child', // 'child' | 'pet' | 'toy' | 'custom'
-      childName = 'Hero',
-      theme = 'adventure',
-      sceneSetting = 'exploring a whimsical wonderland',
       difficulty = 'standard',
     } = req.body;
 
-    if (!photoBase64) {
+    const childName = sanitizeSafeString(req.body?.childName, 40) || 'Hero';
+    const theme = sanitizeSafeString(req.body?.theme, 60) || 'adventure';
+    const sceneSetting = sanitizeSafeString(req.body?.sceneSetting, 150) || 'exploring a whimsical wonderland';
+
+    if (!photoBase64 || typeof photoBase64 !== 'string') {
       return res.status(400).json({ success: false, error: 'Photo data is required' });
+    }
+
+    // Strict payload cap: base64 string must not exceed 5MB
+    if (photoBase64.length > 5 * 1024 * 1024) {
+      return res.status(400).json({
+        success: false,
+        error: 'Photo is too large. Please use a compressed photo under 4MB.',
+      });
     }
 
     const ai = getGenAI();
@@ -584,6 +697,12 @@ Style directives:
         },
       });
     } catch (primaryErr: any) {
+      if (isSafetyOrBadRequestError(primaryErr)) {
+        return res.status(400).json({
+          success: false,
+          error: 'This photo or prompt could not be processed due to safety guidelines. Please try a different photo.',
+        });
+      }
       console.warn('Pro image preview failed for photo-to-art, trying flash image fallback:', primaryErr?.message);
       response = await ai.models.generateContent({
         model: 'gemini-3.1-flash-image',
@@ -628,59 +747,65 @@ Style directives:
     });
   } catch (error: any) {
     console.error('Error in photo-to-line-art:', error);
+    const safeError = isSafetyOrBadRequestError(error)
+      ? 'Photo could not be converted due to safety policy. Please try a different photo.'
+      : 'Failed to convert photo to line art. You can use the local outline filter!';
     return res.status(500).json({
       success: false,
-      error: error.message || 'Failed to convert photo to line art',
+      error: safeError,
     });
   }
 });
 
-// Endpoint: Multi-turn Chat with Gemini with role system instructions and model routing
-app.post('/api/chat', async (req, res) => {
+// Endpoint: Multi-turn Chat with Gemini with strict role restrictions and abuse prevention
+app.post('/api/chat', chatRateLimiter, async (req, res) => {
   try {
     const {
       messages = [],
-      model = 'gemini-3.5-flash',
+      model = 'gemini-3.8-flash',
       role = 'companion',
       context = {},
     } = req.body;
 
-    const ai = getGenAI();
-
-    // Select system instruction based on role
-    let systemInstruction = `You are "ColorCraft Assistant", a friendly, enthusiastic, and highly creative children's book co-creator.
-You help parents, educators, and children brainstorm coloring book themes, invent funny rhyming story captions, and craft imaginative black-and-white scene concepts.
-Current context:
-- Theme: ${context.theme || 'Not specified yet'}
-- Child Name: ${context.childName || 'Little Artist'}
-
-Guidelines:
-- Keep your tone cheerful, warm, and inspiring.
-- When suggesting coloring scenes, focus on clear, identifiable characters and thick-line art descriptions.
-- If the user asks for a complete coloring book or a 5-page outline, provide a clear 5-step numbered list of scenes with short rhyming story lines!
-- Format nicely with markdown bolding and bullet points.`;
-
-    if (role === 'complex_storyteller') {
-      systemInstruction += `\nYou are in Deep Story & Character Mastermind mode. Create rich, narrative-driven 5-part character arcs with engaging educational or whimsical morals suited for bedtime coloring.`;
-    } else if (role === 'quick_sparks') {
-      systemInstruction += `\nYou are in Quick Sparks mode. Give rapid, bulleted, punchy ideas and immediate creative suggestions without fluff.`;
+    if (!Array.isArray(messages) || messages.length === 0) {
+      return res.status(400).json({ success: false, error: 'Messages list is required' });
     }
 
-    // Model selection validation
-    // gemini-3.1-pro-preview for complex tasks, gemini-3.8-flash for general, gemini-3.1-flash-lite for fast
+    const safeTheme = sanitizeSafeString(context?.theme, 80);
+    const safeChildName = sanitizeSafeString(context?.childName, 40);
+
+    const ai = getGenAI();
+
+    // Select system instruction strictly bounded to coloring book creativity
+    let systemInstruction = `You are "ColorCraft Assistant", a friendly, enthusiastic, and kid-appropriate coloring book co-creator.
+You strictly assist parents, educators, and children in brainstorming coloring book themes, writing short rhyming story lines, and creating scene ideas.
+Current context:
+- Theme: ${safeTheme || 'Not specified'}
+- Child Name: ${safeChildName || 'Little Artist'}
+
+STRICT DOMAIN BOUNDARIES:
+- You ONLY discuss children's coloring books, line art ideas, children's bedtime stories, and kid creativity.
+- Do NOT write general programming code, solve math equations, discuss politics, or serve as a general assistant.
+- If asked about non-coloring topics, reply: "I'm your ColorCraft buddy! Let's focus on creating fun coloring pages and adventure stories together! What fun scene would you like to draw next?"
+- Keep all advice safe, family-friendly, cheerful, and brief.`;
+
+    if (role === 'complex_storyteller') {
+      systemInstruction += `\nFocus on crafting imaginative, sequential 5-part story scenes with gentle lessons for children.`;
+    } else if (role === 'quick_sparks') {
+      systemInstruction += `\nFocus on rapid, punchy bulleted ideas for coloring themes and props.`;
+    }
+
     let selectedModel = 'gemini-3.8-flash';
     if (model === 'gemini-3.1-pro-preview' || role === 'complex_storyteller') {
       selectedModel = 'gemini-3.1-pro-preview';
     } else if (model === 'gemini-3.1-flash-lite' || role === 'quick_sparks') {
       selectedModel = 'gemini-3.1-flash-lite';
-    } else if (model === 'gemini-3.8-flash' || model === 'gemini-3.5-flash') {
-      selectedModel = 'gemini-3.8-flash';
     }
 
-    // Convert multi-turn message history into contents array for Gemini
-    const contents = messages.map((m: any) => ({
+    // Limit conversation depth (max 10 recent messages) and max text per message (max 500 chars)
+    const contents = messages.slice(-10).map((m: any) => ({
       role: m.role === 'user' ? 'user' : 'model',
-      parts: [{ text: m.content || '' }],
+      parts: [{ text: sanitizeSafeString(m.content || '', 500) }],
     }));
 
     const response = await ai.models.generateContent({
@@ -689,6 +814,7 @@ Guidelines:
       config: {
         systemInstruction,
         temperature: 0.7,
+        maxOutputTokens: 800,
       },
     });
 
@@ -701,7 +827,7 @@ Guidelines:
     console.error('Error in chat endpoint:', error);
     return res.status(500).json({
       success: false,
-      error: error.message || 'Failed to generate chat response',
+      error: 'Chat assistant is temporarily busy. Please try again in a moment.',
     });
   }
 });

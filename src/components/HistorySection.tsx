@@ -52,7 +52,7 @@ export const HistorySection: React.FC<HistorySectionProps> = ({
               {isAutoSaved && (
                 <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-md">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                  Auto-saved locally
+                  Auto-saved in IndexedDB
                 </span>
               )}
             </div>
@@ -63,7 +63,7 @@ export const HistorySection: React.FC<HistorySectionProps> = ({
         </div>
 
         <div className="flex items-center gap-2 flex-wrap sm:justify-end">
-          {/* Restore Last Session button if data exists in localStorage */}
+          {/* Restore Last Session button if data exists in IndexedDB */}
           {hasAutosavedSession && (
             <button
               type="button"

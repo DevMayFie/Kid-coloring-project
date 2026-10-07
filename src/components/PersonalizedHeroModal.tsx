@@ -15,6 +15,10 @@ import {
 } from 'lucide-react';
 import { convertPhotoToLineArt } from '../utils/photoToLineArtFilter';
 import { playChimeSound } from '../utils/kidAudio';
+import { resizeAndCompressImage } from '../utils/imageCompressor';
+import { sanitizeInput } from '../utils/security';
+import { ParentalConsentModal } from './ParentalConsentModal';
+import { getParentalConsentSync } from '../utils/dbStorage';
 
 interface PersonalizedHeroModalProps {
   isOpen: boolean;
@@ -45,24 +49,37 @@ export function PersonalizedHeroModal({
   const [strokeWeight, setStrokeWeight] = useState<'bold' | 'extra-bold'>('bold');
   const [asCover, setAsCover] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [hasParentalConsent, setHasParentalConsent] = useState(() => getParentalConsentSync());
+  const [showConsentModal, setShowConsentModal] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   if (!isOpen) return null;
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    if (!hasParentalConsent) {
+      setShowConsentModal(true);
+      return;
+    }
+
     setErrorMsg(null);
-    const reader = new FileReader();
-    reader.onload = async (event) => {
-      const dataUrl = event.target?.result as string;
-      setPhotoPreview(dataUrl);
+    try {
+      // Compress and resize client-side to max 1024x1024 to keep payload lightweight and fast
+      const compressedDataUrl = await resizeAndCompressImage(file, {
+        maxWidth: 1024,
+        maxHeight: 1024,
+        quality: 0.82,
+      });
+      setPhotoPreview(compressedDataUrl);
       playChimeSound('pop');
       // Generate instant local line-art preview
-      await runLocalLineArt(dataUrl, strokeWeight);
-    };
-    reader.readAsDataURL(file);
+      await runLocalLineArt(compressedDataUrl, strokeWeight);
+    } catch (err: any) {
+      console.warn('Error compressing photo:', err);
+      setErrorMsg('Failed to process image. Please try another photo.');
+    }
   };
 
   const runLocalLineArt = async (imgUrl: string, weight: 'bold' | 'extra-bold') => {
@@ -84,6 +101,11 @@ export function PersonalizedHeroModal({
 
   const handleGenerateAiArt = async () => {
     if (!photoPreview) return;
+    if (!hasParentalConsent) {
+      setErrorMsg('Parental consent is required before using AI photo processing.');
+      return;
+    }
+    const cleanHeroName = sanitizeInput(heroName, 40) || 'Hero';
     setIsGeneratingAi(true);
     setErrorMsg(null);
     playChimeSound('sparkle');
@@ -95,8 +117,8 @@ export function PersonalizedHeroModal({
         body: JSON.stringify({
           photoBase64: photoPreview,
           subjectType,
-          childName: heroName,
-          theme,
+          childName: cleanHeroName,
+          theme: sanitizeInput(theme, 50),
           sceneSetting: `celebrating an epic ${theme} adventure with friendly companion characters`,
           difficulty: 'standard',
         }),
@@ -111,7 +133,7 @@ export function PersonalizedHeroModal({
       }
     } catch (err: any) {
       console.warn('AI Hero generation fallback to local filter:', err);
-      setErrorMsg('AI server busy. Converted with instant high-contrast line-art filter!');
+      setErrorMsg(err.message || 'AI service busy. Converted with instant high-contrast line-art filter!');
       // Re-run local extraction as safe fallback
       await runLocalLineArt(photoPreview, 'extra-bold');
     } finally {
@@ -229,6 +251,33 @@ export function PersonalizedHeroModal({
               2. Upload Reference Photo
             </label>
 
+            {/* Parental Consent & Privacy Protection Gate */}
+            <div className="mb-3 p-3 bg-amber-50/80 border border-amber-200 rounded-xl">
+              <div className="flex items-start gap-2">
+                <ShieldAlert className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+                <div>
+                  <h5 className="text-xs font-bold text-amber-950">Child Privacy & Safety Notice</h5>
+                  <p className="text-[11px] text-amber-900 leading-relaxed mt-0.5">
+                    Photos are processed in-memory solely to generate black-and-white coloring outlines. We never store, index, or share personal photos of children.
+                  </p>
+                </div>
+              </div>
+              <label className="flex items-center gap-2 cursor-pointer mt-2 pt-2 border-t border-amber-200/60 select-none">
+                <input
+                  type="checkbox"
+                  checked={hasParentalConsent}
+                  onChange={(e) => {
+                    setHasParentalConsent(e.target.checked);
+                    if (e.target.checked) setErrorMsg(null);
+                  }}
+                  className="rounded text-amber-600 focus:ring-amber-500 w-4 h-4 cursor-pointer"
+                />
+                <span className="text-xs font-bold text-amber-950">
+                  I am a parent or legal guardian (18+) and consent to processing this photo for this coloring book
+                </span>
+              </label>
+            </div>
+
             <input
               type="file"
               ref={fileInputRef}
@@ -239,14 +288,28 @@ export function PersonalizedHeroModal({
 
             {!photoPreview ? (
               <div
-                onClick={() => fileInputRef.current?.click()}
-                className="border-2 border-dashed border-amber-300 hover:border-amber-500 bg-amber-50/50 hover:bg-amber-50 rounded-2xl p-8 flex flex-col items-center justify-center cursor-pointer transition-colors group"
+                onClick={() => {
+                  if (!hasParentalConsent) {
+                    setShowConsentModal(true);
+                    return;
+                  }
+                  fileInputRef.current?.click();
+                }}
+                className={`border-2 border-dashed rounded-2xl p-8 flex flex-col items-center justify-center transition-colors group cursor-pointer ${
+                  hasParentalConsent
+                    ? 'border-amber-300 hover:border-amber-500 bg-amber-50/50 hover:bg-amber-50'
+                    : 'border-gray-200 bg-gray-50/60 hover:bg-amber-50/30'
+                }`}
               >
-                <div className="w-14 h-14 rounded-full bg-amber-100 group-hover:bg-amber-200 flex items-center justify-center text-amber-600 mb-3 transition-transform group-hover:scale-110">
+                <div className={`w-14 h-14 rounded-full flex items-center justify-center mb-3 transition-transform group-hover:scale-110 ${
+                  hasParentalConsent ? 'bg-amber-100 text-amber-600' : 'bg-gray-200 text-gray-500'
+                }`}>
                   <Camera className="w-7 h-7" />
                 </div>
-                <p className="text-sm font-bold text-gray-800">Click or drag & drop a photo here</p>
-                <p className="text-xs text-gray-500 mt-1">Supports PNG, JPG, or WEBP photos of kids, pets, or toys</p>
+                <p className="text-sm font-bold text-gray-800">
+                  {hasParentalConsent ? 'Click or drag & drop a photo here' : 'Parental consent required to upload child photo'}
+                </p>
+                <p className="text-xs text-gray-500 mt-1">Supports PNG, JPG, or WEBP photos (automatically compressed)</p>
               </div>
             ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -370,6 +433,23 @@ export function PersonalizedHeroModal({
           </button>
         </div>
       </div>
+
+      {/* Mandatory Parental Consent Modal */}
+      <ParentalConsentModal
+        isOpen={showConsentModal}
+        onClose={() => setShowConsentModal(false)}
+        onConsentGiven={() => {
+          setHasParentalConsent(true);
+          setErrorMsg(null);
+          // Auto-trigger file upload
+          setTimeout(() => {
+            fileInputRef.current?.click();
+          }, 150);
+        }}
+        childName={heroName}
+        hasPhoto={true}
+        actionTitle="Upload Child Photo"
+      />
     </div>
   );
 }

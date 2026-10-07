@@ -17,6 +17,7 @@ import { ColoringBook } from '../types';
 import { generateMaze, MazeGrid } from '../utils/mazeGenerator';
 import { generateWordSearch, getWordsForTheme, WordSearchResult } from '../utils/wordSearchGenerator';
 import { playChimeSound } from '../utils/kidAudio';
+import { escapeHtml } from '../utils/security';
 import confetti from 'canvas-confetti';
 
 interface BonusActivitiesModalProps {
@@ -198,7 +199,7 @@ export const BonusActivitiesModal: React.FC<BonusActivitiesModalProps> = ({
     printWin.document.write(`
       <html>
         <head>
-          <title>${book.childName}'s Activity Sheet</title>
+          <title>${escapeHtml(book.childName)}'s Activity Sheet</title>
           <style>
             @page { size: letter portrait; margin: 12mm; }
             body { font-family: 'Fredoka', 'Segoe UI', Arial, sans-serif; text-align: center; color: #1e293b; margin: 0; padding: 10px; }

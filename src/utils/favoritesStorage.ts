@@ -1,25 +1,31 @@
 import { ColoringBook, FavoriteBook } from '../types';
+import {
+  saveFavoriteToDb,
+  getFavoritesSync,
+  getFavoritesAsync,
+  removeFavoriteFromDb,
+  isFavoriteSync,
+} from './dbStorage';
 
-const STORAGE_KEY = 'coloring_book_favorites_v1';
-
+/**
+ * Get all saved favorite books from persistent IndexedDB.
+ */
 export function getFavorites(): FavoriteBook[] {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch (err) {
-    console.error('Failed to parse favorites from localStorage:', err);
-    return [];
-  }
+  return getFavoritesSync();
 }
 
-export function saveFavorite(book: ColoringBook): FavoriteBook {
-  const current = getFavorites();
-  const existingIdx = current.findIndex(
-    (fav) => fav.id === book.id || (fav.theme === book.theme && fav.childName === book.childName)
-  );
+/**
+ * Async getter for favorites from IndexedDB
+ */
+export async function getFavoritesPromise(): Promise<FavoriteBook[]> {
+  return getFavoritesAsync();
+}
 
+/**
+ * Save a coloring book to favorites in persistent IndexedDB.
+ * Preserves high-resolution base64 drawings, stickers, and metadata without quota limits.
+ */
+export function saveFavorite(book: ColoringBook): FavoriteBook {
   const favoriteItem: FavoriteBook = {
     id: book.id || `fav-${Date.now()}`,
     savedAt: Date.now(),
@@ -35,41 +41,42 @@ export function saveFavorite(book: ColoringBook): FavoriteBook {
     coverImageUrl: book.coverImageUrl,
     pages: book.pages,
     stickerSheet: book.stickerSheet,
+    defaultBorderStyle: book.defaultBorderStyle,
+    includeCertificate: book.includeCertificate,
+    certificateDetails: book.certificateDetails,
+    includeQrCode: book.includeQrCode,
+    includeDrawYourEnding: book.includeDrawYourEnding,
+    includeCrayonSwatches: book.includeCrayonSwatches,
+    printLayout: book.printLayout,
+    heroPhotoUrl: book.heroPhotoUrl,
+    heroSubjectType: book.heroSubjectType,
+    brandIntegration: book.brandIntegration,
+    language: book.language,
+    secondaryLanguage: book.secondaryLanguage,
+    activityMode: book.activityMode,
+    dedicationAuthor: book.dedicationAuthor,
   };
 
-  let updated: FavoriteBook[];
-  if (existingIdx >= 0) {
-    updated = [...current];
-    updated[existingIdx] = favoriteItem;
-  } else {
-    updated = [favoriteItem, ...current];
-  }
-
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-    window.dispatchEvent(new CustomEvent('coloring_book_favorites_updated'));
-  } catch (err) {
-    console.warn('Storage quota exceeded or error saving favorite:', err);
-  }
+  // Write directly to persistent IndexedDB
+  saveFavoriteToDb(favoriteItem).catch((err) => {
+    console.warn('Persistent IndexedDB save favorite error:', err);
+  });
 
   return favoriteItem;
 }
 
+/**
+ * Remove a favorite by ID from persistent IndexedDB.
+ */
 export function removeFavorite(favoriteId: string): void {
-  const current = getFavorites();
-  const updated = current.filter((fav) => fav.id !== favoriteId);
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-    window.dispatchEvent(new CustomEvent('coloring_book_favorites_updated'));
-  } catch (err) {
-    console.error('Error removing favorite:', err);
-  }
+  removeFavoriteFromDb(favoriteId).catch((err) => {
+    console.warn('Persistent IndexedDB remove favorite error:', err);
+  });
 }
 
+/**
+ * Synchronous check if a book is saved as a favorite.
+ */
 export function isFavorite(bookId?: string, theme?: string, childName?: string): boolean {
-  if (!bookId && !theme) return false;
-  const current = getFavorites();
-  return current.some(
-    (fav) => fav.id === bookId || (theme && childName && fav.theme.toLowerCase() === theme.toLowerCase() && fav.childName.toLowerCase() === childName.toLowerCase())
-  );
+  return isFavoriteSync(bookId, theme, childName);
 }

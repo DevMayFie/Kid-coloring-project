@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Sparkles,
   Wand2,
@@ -23,11 +23,15 @@ import {
   PenTool,
   Globe,
   Heart,
+  ShieldCheck,
 } from 'lucide-react';
 import { ImageResolution, AspectRatio, ColoringDifficulty, ActivityMode, BookLanguage } from '../types';
 import { POPULAR_THEMES } from '../utils/sampleData';
 import { KidStoryBuilder } from './KidStoryBuilder';
 import { playChimeSound } from '../utils/kidAudio';
+import { validateKidContent, sanitizeInput } from '../utils/security';
+import { ParentalConsentModal } from './ParentalConsentModal';
+import { getParentalConsentSync } from '../utils/dbStorage';
 
 export interface InspirationTheme {
   theme: string;
@@ -96,6 +100,32 @@ export const BookForm: React.FC<BookFormProps> = ({
   const [isLoadingInspiration, setIsLoadingInspiration] = useState(false);
   const [showInspirationPanel, setShowInspirationPanel] = useState(false);
   const [inspirationError, setInspirationError] = useState<string | null>(null);
+  const [contentWarning, setContentWarning] = useState<string | null>(null);
+
+  // Mandatory Parental Consent state
+  const [showConsentModal, setShowConsentModal] = useState(false);
+  const [pendingSubmission, setPendingSubmission] = useState<{
+    theme: string;
+    childName: string;
+    customTitle?: string;
+    dedicationAuthor?: string;
+    pageCount: number;
+    difficulty: ColoringDifficulty;
+    activityMode: ActivityMode;
+    secondaryLanguage?: BookLanguage;
+    resolution: ImageResolution;
+    aspectRatio: AspectRatio;
+    userNotes?: string;
+  } | null>(null);
+  const [hasConsent, setHasConsent] = useState(() => getParentalConsentSync());
+
+  useEffect(() => {
+    const handleConsentChange = () => {
+      setHasConsent(getParentalConsentSync());
+    };
+    window.addEventListener('parental_consent_updated', handleConsentChange);
+    return () => window.removeEventListener('parental_consent_updated', handleConsentChange);
+  }, []);
 
   const handleGetInspiration = async () => {
     setIsLoadingInspiration(true);
@@ -166,21 +196,55 @@ export const BookForm: React.FC<BookFormProps> = ({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!theme.trim() || !childName.trim() || isGenerating) return;
+    setContentWarning(null);
+    const cleanTheme = sanitizeInput(theme, 100);
+    const cleanChildName = sanitizeInput(childName, 40);
+
+    if (!cleanTheme || !cleanChildName || isGenerating) return;
+
+    const themeCheck = validateKidContent(cleanTheme);
+    if (!themeCheck.valid) {
+      setContentWarning(themeCheck.reason || 'Please enter a family-friendly coloring theme.');
+      return;
+    }
+
+    const nameCheck = validateKidContent(cleanChildName);
+    if (!nameCheck.valid) {
+      setContentWarning('Please enter a friendly name for the child.');
+      return;
+    }
+
     const validatedPageCount = Math.max(1, Math.min(12, Number(pageCount) || 5));
-    onGenerateBook({
-      theme: theme.trim(),
-      childName: childName.trim(),
-      customTitle: customTitle.trim() || undefined,
-      dedicationAuthor: dedicationAuthor.trim() || undefined,
+    const submissionData = {
+      theme: cleanTheme,
+      childName: cleanChildName,
+      customTitle: sanitizeInput(customTitle, 100) || undefined,
+      dedicationAuthor: sanitizeInput(dedicationAuthor, 60) || undefined,
       pageCount: validatedPageCount,
       difficulty,
       activityMode,
       secondaryLanguage: secondaryLanguage || undefined,
       resolution,
       aspectRatio,
-      userNotes: userNotes.trim(),
-    });
+      userNotes: sanitizeInput(userNotes, 250),
+    };
+
+    // Mandatory Parental Consent check before submitting child data
+    if (!getParentalConsentSync()) {
+      setPendingSubmission(submissionData);
+      setShowConsentModal(true);
+      return;
+    }
+
+    onGenerateBook(submissionData);
+  };
+
+  const handleConsentConfirmed = () => {
+    setHasConsent(true);
+    if (pendingSubmission) {
+      onGenerateBook(pendingSubmission);
+      setPendingSubmission(null);
+    }
   };
 
   return (
@@ -202,15 +266,44 @@ export const BookForm: React.FC<BookFormProps> = ({
           </span>
         </div>
 
+        {/* Content Moderation Warning */}
+        {contentWarning && (
+          <div className="p-3 bg-amber-50 border border-amber-300 rounded-xl text-xs text-amber-900 flex items-center justify-between gap-2">
+            <span>⚠️ {contentWarning}</span>
+            <button
+              type="button"
+              onClick={() => setContentWarning(null)}
+              className="text-amber-700 hover:text-amber-900 font-bold px-1.5"
+            >
+              ✕
+            </button>
+          </div>
+        )}
+
         {/* Primary Row 1: Child's Name & Number of Pages */}
         <div className="grid grid-cols-1 sm:grid-cols-12 gap-4">
           {/* Child Name */}
           <div className="sm:col-span-7">
-            <div className="flex items-center justify-between mb-1.5">
-              <label htmlFor="child-name-input" className="block text-xs font-bold uppercase tracking-wider text-gray-700 flex items-center gap-1.5">
-                <User className="w-3.5 h-3.5 text-amber-600" />
-                Child's First Name
-              </label>
+            <div className="flex items-center justify-between mb-1.5 flex-wrap gap-1">
+              <div className="flex items-center gap-2">
+                <label htmlFor="child-name-input" className="text-xs font-bold uppercase tracking-wider text-gray-700 flex items-center gap-1.5">
+                  <User className="w-3.5 h-3.5 text-amber-600" />
+                  Child's First Name
+                </label>
+                <button
+                  type="button"
+                  onClick={() => setShowConsentModal(true)}
+                  className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold border transition-colors cursor-pointer ${
+                    hasConsent
+                      ? 'bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100'
+                      : 'bg-amber-50 text-amber-900 border-amber-200 hover:bg-amber-100'
+                  }`}
+                  title="View parental consent and child privacy details"
+                >
+                  <ShieldCheck className={`w-3 h-3 ${hasConsent ? 'text-emerald-600' : 'text-amber-600'}`} />
+                  <span>{hasConsent ? 'Parental Consent Verified' : 'Parental Consent Required'}</span>
+                </button>
+              </div>
               <button
                 type="button"
                 id="get-inspiration-btn"
@@ -1148,6 +1241,18 @@ export const BookForm: React.FC<BookFormProps> = ({
           </p>
         </div>
       </form>
+
+      {/* Mandatory Parental Consent Modal */}
+      <ParentalConsentModal
+        isOpen={showConsentModal}
+        onClose={() => {
+          setShowConsentModal(false);
+          setPendingSubmission(null);
+        }}
+        onConsentGiven={handleConsentConfirmed}
+        childName={pendingSubmission?.childName || childName}
+        actionTitle="Create Coloring Book"
+      />
     </div>
   );
 };

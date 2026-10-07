@@ -3,6 +3,7 @@ import { X, Award, Printer, Download, Sparkles, CheckCircle, Edit3 } from 'lucid
 import { ColoringBook } from '../types';
 import { generateCertificateDataUrl } from '../utils/certificateGenerator';
 import { playChimeSound } from '../utils/kidAudio';
+import { escapeHtml } from '../utils/security';
 
 interface CertificateModalProps {
   isOpen: boolean;
@@ -48,7 +49,7 @@ export function CertificateModal({
     printWindow.document.write(`
       <html>
         <head>
-          <title>Certificate of Completion - ${recipientName}</title>
+          <title>Certificate of Completion - ${escapeHtml(recipientName)}</title>
           <style>
             @page { size: landscape; margin: 0; }
             body { margin: 0; display: flex; align-items: center; justify-content: center; height: 100vh; background: #fff; }

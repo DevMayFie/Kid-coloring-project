@@ -248,6 +248,14 @@ export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
     }
   };
 
+  const failedPages = book.pages.filter((p) => p.status === 'error');
+
+  const handleRetryAllFailedPages = async () => {
+    for (const page of failedPages) {
+      await handlePageRegen(page.id);
+    }
+  };
+
   const handleStickerRegen = async () => {
     if (!onRegenerateStickers) return;
     setIsRegeneratingStickers(true);
@@ -639,6 +647,37 @@ export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
             transition={{ duration: 0.28, ease: 'easeOut' }}
             className="space-y-8"
           >
+          {/* Prominent API Failure Warning Banner with Retry All Action */}
+          {failedPages.length > 0 && (
+            <motion.div
+              initial={{ opacity: 0, y: -8 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="p-4 sm:p-5 rounded-2xl bg-rose-50 border-2 border-rose-300 shadow-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4"
+            >
+              <div className="flex items-start gap-3">
+                <div className="w-10 h-10 rounded-xl bg-rose-100 border border-rose-200 text-rose-600 flex items-center justify-center shrink-0">
+                  <AlertCircle className="w-6 h-6" />
+                </div>
+                <div>
+                  <h4 className="font-bold text-sm text-rose-950">
+                    {failedPages.length} {failedPages.length === 1 ? 'page' : 'pages'} could not be drawn
+                  </h4>
+                  <p className="text-xs text-rose-800 mt-0.5 leading-relaxed">
+                    API generation was interrupted or reached a limit. You can retry individual pages below or retry all {failedPages.length} failed {failedPages.length === 1 ? 'page' : 'pages'} now.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={handleRetryAllFailedPages}
+                className="shrink-0 px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs flex items-center gap-2 shadow-sm active:scale-95 transition-all cursor-pointer"
+              >
+                <RefreshCw className="w-4 h-4" />
+                <span>Retry {failedPages.length} Failed {failedPages.length === 1 ? 'Page' : 'Pages'}</span>
+              </button>
+            </motion.div>
+          )}
+
           {/* COVER CARD PREVIEW */}
           <section
             id="coloring-book-cover-card"
@@ -1065,6 +1104,30 @@ export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
                             <div className="w-full h-full bg-linear-to-r from-amber-400 via-orange-500 to-amber-400 rounded-full animate-pulse"></div>
                           </div>
                         </motion.div>
+                      ) : page.status === 'error' ? (
+                        <motion.div
+                          key={`error-${page.id}`}
+                          initial={{ opacity: 0, scale: 0.95 }}
+                          animate={{ opacity: 1, scale: 1 }}
+                          exit={{ opacity: 0 }}
+                          className="text-center p-4 flex flex-col items-center justify-center gap-2"
+                        >
+                          <div className="w-10 h-10 rounded-full bg-rose-100 flex items-center justify-center text-rose-600 mb-1">
+                            <AlertCircle className="w-6 h-6" />
+                          </div>
+                          <p className="text-xs font-bold text-gray-900">Drawing Incomplete</p>
+                          <p className="text-[11px] text-gray-600 max-w-[200px] line-clamp-2">
+                            {page.errorMessage || 'Could not generate this page image.'}
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => handlePageRegen(page.id)}
+                            className="mt-1 px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs flex items-center gap-1.5 shadow-sm active:scale-95 cursor-pointer transition-all"
+                          >
+                            <RefreshCw className="w-3.5 h-3.5" />
+                            <span>Retry Page Drawing</span>
+                          </button>
+                        </motion.div>
                       ) : (
                         <motion.div
                           key={`empty-${page.id}`}
@@ -1072,11 +1135,17 @@ export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
                           animate={{ opacity: 1 }}
                           exit={{ opacity: 0 }}
                           transition={{ duration: 0.2 }}
-                          className="text-center p-4"
+                          className="text-center p-4 flex flex-col items-center justify-center gap-2"
                         >
-                          <AlertCircle className="w-8 h-8 text-amber-500 mx-auto mb-2" />
+                          <AlertCircle className="w-8 h-8 text-amber-500 mb-1" />
                           <p className="text-xs font-bold text-gray-800">No Image Yet</p>
-                          <p className="text-[11px] text-gray-500">Click Regenerate to create art</p>
+                          <button
+                            type="button"
+                            onClick={() => handlePageRegen(page.id)}
+                            className="px-3 py-1 rounded-lg bg-amber-500 text-white text-xs font-bold hover:bg-amber-600 cursor-pointer"
+                          >
+                            Draw This Page
+                          </button>
                         </motion.div>
                       )}
                     </AnimatePresence>
@@ -1284,15 +1353,19 @@ export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
                   {/* Page Action Bar */}
                   <div className="flex items-center justify-between gap-1.5 pt-2.5 border-t border-amber-100/80 text-xs">
                     <div className="flex items-center gap-1">
-                      {/* Regenerate Button */}
+                      {/* Regenerate / Retry Button */}
                       <button
                         onClick={() => handlePageRegen(page.id)}
                         disabled={isRegen}
-                        title="Regenerate this specific coloring page"
-                        className="p-1.5 sm:px-2 sm:py-1 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200 font-medium transition-colors flex items-center gap-1 disabled:opacity-50 cursor-pointer"
+                        title={page.status === 'error' ? 'Retry generating this page' : 'Regenerate this specific coloring page'}
+                        className={`p-1.5 sm:px-2 sm:py-1 rounded-lg font-medium transition-colors flex items-center gap-1 disabled:opacity-50 cursor-pointer ${
+                          page.status === 'error'
+                            ? 'bg-rose-50 hover:bg-rose-100 text-rose-800 border border-rose-300'
+                            : 'bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200'
+                        }`}
                       >
                         <RefreshCw className={`w-3.5 h-3.5 ${isRegen ? 'animate-spin' : ''}`} />
-                        <span className="hidden sm:inline">Redo</span>
+                        <span className="hidden sm:inline">{page.status === 'error' ? 'Retry' : 'Redo'}</span>
                       </button>
 
                       {/* Edit Scene / Prompt Button */}
