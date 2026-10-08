@@ -498,6 +498,31 @@ export const Header: React.FC<HeaderProps> = ({
                       <ChevronRight className="w-3.5 h-3.5 text-gray-400 group-hover:text-amber-600 transition-transform group-hover:translate-x-0.5" />
                     </button>
                   )}
+
+                  {/* Export Project Source Code (.ZIP) */}
+                  <a
+                    href="/api/download-project"
+                    download="coloring-book-studio-latest.zip"
+                    onClick={() => setIsMoreMenuOpen(false)}
+                    className="w-full flex items-center justify-between px-3 py-2 text-left text-xs hover:bg-emerald-50 transition-colors group cursor-pointer border-t border-amber-100"
+                    title="Export complete codebase with latest changes"
+                  >
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <div className="p-1.5 rounded-lg bg-emerald-100 text-emerald-800">
+                        <Download className="w-3.5 h-3.5" />
+                      </div>
+                      <div className="min-w-0">
+                        <div className="font-semibold text-gray-900 flex items-center gap-1.5">
+                          <span>Download Project (.ZIP)</span>
+                          <span className="text-[10px] bg-emerald-100 text-emerald-800 px-1.5 py-0.2 rounded-full font-bold">
+                            Source
+                          </span>
+                        </div>
+                        <div className="text-[11px] text-gray-500 truncate">Export full codebase for Claude / GitHub</div>
+                      </div>
+                    </div>
+                    <ChevronRight className="w-3.5 h-3.5 text-gray-400 group-hover:text-emerald-600 transition-transform group-hover:translate-x-0.5" />
+                  </a>
                 </div>
               </div>
             )}

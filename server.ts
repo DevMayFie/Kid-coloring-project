@@ -1,5 +1,7 @@
 import express from 'express';
 import path from 'path';
+import fs from 'fs';
+import { execSync } from 'child_process';
 import dotenv from 'dotenv';
 import rateLimit from 'express-rate-limit';
 import { GoogleGenAI, Type } from '@google/genai';
@@ -102,6 +104,36 @@ app.get('/api/health', (req, res) => {
     status: 'ok',
     hasApiKey: Boolean(process.env.GEMINI_API_KEY),
   });
+});
+
+// Project source export endpoint (creates a clean zip excluding node_modules and .git)
+app.get('/api/download-project', (req, res) => {
+  try {
+    const zipPath = path.join('/tmp', 'project-source.zip');
+    const pyScript = `
+import zipfile, os
+base_dir = '/app/applet'
+zip_path = '/tmp/project-source.zip'
+exclude_dirs = {'node_modules', '.git', 'dist', 'build', '.cache'}
+exclude_files = {'.env', 'project-source.zip'}
+with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+    for root, dirs, files in os.walk(base_dir):
+        dirs[:] = [d for d in dirs if d not in exclude_dirs]
+        for f in files:
+            if f in exclude_files:
+                continue
+            full_path = os.path.join(root, f)
+            rel_path = os.path.relpath(full_path, base_dir)
+            zipf.write(full_path, rel_path)
+`;
+    execSync(`python3 -c "${pyScript.replace(/"/g, '\\"')}"`);
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', 'attachment; filename="coloring-book-studio-latest.zip"');
+    const fileStream = fs.createReadStream(zipPath);
+    fileStream.pipe(res);
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to generate project archive', details: err?.message });
+  }
 });
 
 // Handler for both /api/plan-book and /api/generate-plan
