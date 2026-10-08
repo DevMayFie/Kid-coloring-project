@@ -1,5 +1,6 @@
 import { ColoringBook, ChatRole } from '../types';
 import { createThematicCoverSvg, buildThematicCoverAiPrompt } from './coverIllustrationGenerator';
+import { escapeXml } from './security';
 
 // Clean SVG black & white thick line art generator for starter previews and reliable offline rendering
 export function createSampleLineArtSvg(sceneType: string, label: string): string {
@@ -197,7 +198,7 @@ export function createSampleLineArtSvg(sceneType: string, label: string): string
     <rect x="8" y="8" width="364" height="404" fill="none" stroke="#222222" stroke-width="5" rx="10" />
     ${innerArt}
     <!-- Caption label inside SVG for clarity -->
-    <text x="190" y="402" text-anchor="middle" font-family="sans-serif" font-weight="bold" font-size="12" fill="#555555">${label}</text>
+    <text x="190" y="402" text-anchor="middle" font-family="sans-serif" font-weight="bold" font-size="12" fill="#555555">${escapeXml(label)}</text>
   </svg>`;
 
   return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
@@ -205,8 +206,8 @@ export function createSampleLineArtSvg(sceneType: string, label: string): string
 
 // Printable Sticker Sheet SVG generator with dashed cut lines and themed badges
 export function createSampleStickersSvg(theme: string, childName: string): string {
-  const safeName = (childName || 'Artist').toUpperCase();
-  const safeTheme = (theme || 'Theme').toUpperCase();
+  const safeName = escapeXml((childName || 'Artist').toUpperCase());
+  const safeTheme = escapeXml((theme || 'Theme').toUpperCase());
 
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 380 500" width="100%" height="100%">
     <rect width="380" height="500" fill="#ffffff" />

@@ -1,9 +1,11 @@
+import crypto from 'crypto';
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
 import { execSync } from 'child_process';
 import dotenv from 'dotenv';
 import rateLimit from 'express-rate-limit';
+import { z } from 'zod';
 import { GoogleGenAI, Type } from '@google/genai';
 import { createServer as createViteServer } from 'vite';
 import {
@@ -17,46 +19,219 @@ dotenv.config();
 const app = express();
 const PORT = 3000;
 
+// Security: Disable X-Powered-By header to prevent fingerprinting
+app.disable('x-powered-by');
+
+// Security: Comprehensive HTTP Security Headers configured for AI Studio iFrame preview
+app.use((_req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  // Allow camera & microphone requested in metadata.json for avatar photo capture and audio chimes
+  res.setHeader('Permissions-Policy', 'camera=(self), microphone=(self), geolocation=()');
+  // Permissive frame-ancestors for AI Studio development environment and preview iframe embedding
+  res.setHeader(
+    'Content-Security-Policy',
+    "default-src 'self' https: data: blob: 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; media-src 'self' data: blob:; connect-src 'self' https:; frame-ancestors *;"
+  );
+  next();
+});
+
 // Respect Cloud Run / reverse-proxy X-Forwarded-For headers
 app.set('trust proxy', 1);
 
-app.use(express.json({ limit: '8mb' }));
+// Security: Split JSON body limits - narrow 512kb for standard routes, larger 6mb strictly for photo upload
+const standardJsonParser = express.json({ limit: '512kb' });
+const photoJsonParser = express.json({ limit: '6mb' });
 
-// Per-IP rate limiter for heavy image generation (protecting Gemini Pro & Flash image quota)
-const imageRateLimiter = rateLimit({
-  windowMs: 10 * 60 * 1000, // 10 minutes
-  max: 30, // Limit each IP to 30 image requests per window
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: {
-    success: false,
-    error: 'Image generation rate limit reached. Please wait a few minutes before requesting more pages.',
-  },
+app.use((req, res, next) => {
+  if (req.path === '/api/photo-to-line-art') {
+    return photoJsonParser(req, res, next);
+  }
+  return standardJsonParser(req, res, next);
 });
 
-// Per-IP rate limiter for chat interactions (preventing proxy abuse)
-const chatRateLimiter = rateLimit({
-  windowMs: 10 * 60 * 1000, // 10 minutes
-  max: 40, // Limit each IP to 40 chat messages per window
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: {
-    success: false,
-    error: 'Chat message rate limit reached. Please wait a few minutes before sending more messages.',
-  },
+// Security: Global JSON error handler catching invalid JSON bodies and size limit violations
+app.use((err: any, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (err instanceof SyntaxError && 'status' in err && (err as any).status === 400 && 'body' in err) {
+    return res.status(400).json({
+      success: false,
+      error: 'Malformed JSON payload. Please provide valid JSON formatted data.',
+    });
+  }
+  if (err && (err.type === 'entity.too.large' || err.status === 413)) {
+    return res.status(413).json({
+      success: false,
+      error: 'Payload size exceeds allowable limit.',
+    });
+  }
+  next(err);
 });
 
-// Per-IP rate limiter for book storyboard planning
-const planRateLimiter = rateLimit({
-  windowMs: 10 * 60 * 1000, // 10 minutes
-  max: 25, // Limit each IP to 25 book plans per window
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: {
-    success: false,
-    error: 'Book planning rate limit reached. Please wait a few minutes before creating a new book.',
-  },
+// -------------------------------------------------------------
+// CRYPTOGRAPHIC SERVER-SIDE PARENTAL CONSENT VERIFICATION
+// -------------------------------------------------------------
+const CONSENT_SECRET = process.env.CONSENT_SECRET || crypto.randomBytes(32).toString('hex');
+
+function createConsentToken(data: { guardianRole: string; childName?: string }): { token: string; expiresAt: number } {
+  const expiresAt = Date.now() + 4 * 60 * 60 * 1000; // 4 hours validity
+  const payload = JSON.stringify({
+    role: data.guardianRole,
+    childName: data.childName || '',
+    issuedAt: Date.now(),
+    expiresAt,
+  });
+  const b64Payload = Buffer.from(payload).toString('base64url');
+  const signature = crypto.createHmac('sha256', CONSENT_SECRET).update(b64Payload).digest('base64url');
+  return {
+    token: `${b64Payload}.${signature}`,
+    expiresAt,
+  };
+}
+
+function verifyConsentToken(token: string | undefined): { valid: boolean; payload?: any; reason?: string } {
+  if (!token || typeof token !== 'string') {
+    return {
+      valid: false,
+      reason: 'Server-side verified parental consent is required under COPPA/GDPR-K before processing child photos.',
+    };
+  }
+  const parts = token.split('.');
+  if (parts.length !== 2) {
+    return { valid: false, reason: 'Invalid parental consent verification token format.' };
+  }
+  const [b64Payload, signature] = parts;
+  const expectedSig = crypto.createHmac('sha256', CONSENT_SECRET).update(b64Payload).digest('base64url');
+  if (signature !== expectedSig) {
+    return { valid: false, reason: 'Forged or invalid parental consent signature.' };
+  }
+  try {
+    const payload = JSON.parse(Buffer.from(b64Payload, 'base64url').toString('utf8'));
+    if (!payload.expiresAt || payload.expiresAt < Date.now()) {
+      return { valid: false, reason: 'Parental consent token has expired. Please reconfirm parental consent.' };
+    }
+    return { valid: true, payload };
+  } catch {
+    return { valid: false, reason: 'Corrupt parental consent payload.' };
+  }
+}
+
+// Helper: Standardized rate limiter factory with refined IETF headers and secure response masking
+function createRateLimiter(options: { windowMinutes: number; max: number; message: string }) {
+  return rateLimit({
+    windowMs: options.windowMinutes * 60 * 1000,
+    max: options.max,
+    standardHeaders: 'draft-7', // Sends standard RateLimit-Limit, RateLimit-Remaining, RateLimit-Reset headers
+    legacyHeaders: false, // Suppresses deprecated X-RateLimit-* headers
+    statusCode: 429,
+    message: {
+      success: false,
+      error: options.message,
+    },
+    handler: (_req, res, _next, optionsUsed) => {
+      res.status(optionsUsed.statusCode).json(optionsUsed.message);
+    },
+  });
+}
+
+// Per-IP rate limiters
+const imageRateLimiter = createRateLimiter({
+  windowMinutes: 10,
+  max: 30,
+  message: 'Image generation rate limit reached. Please wait a few minutes before requesting more pages.',
 });
+
+const chatRateLimiter = createRateLimiter({
+  windowMinutes: 10,
+  max: 40,
+  message: 'Chat message rate limit reached. Please wait a few minutes before sending more messages.',
+});
+
+const planRateLimiter = createRateLimiter({
+  windowMinutes: 10,
+  max: 25,
+  message: 'Book planning rate limit reached. Please wait a few minutes before creating a new book.',
+});
+
+const inspirationRateLimiter = createRateLimiter({
+  windowMinutes: 10,
+  max: 30,
+  message: 'Theme inspiration rate limit reached. Please wait a moment before requesting more themes.',
+});
+
+const downloadRateLimiter = createRateLimiter({
+  windowMinutes: 10,
+  max: 10,
+  message: 'Project download limit reached. Please wait a few minutes before downloading another archive.',
+});
+
+const consentRateLimiter = createRateLimiter({
+  windowMinutes: 10,
+  max: 30,
+  message: 'Parental consent verification limit reached. Please wait a few minutes before submitting verification again.',
+});
+
+// Inappropriate words blocklist for children's application moderation
+const INAPPROPRIATE_WORDS = [
+  'nsfw',
+  'porn',
+  'nude',
+  'naked',
+  'gore',
+  'blood',
+  'slaughter',
+  'weapon',
+  'gun',
+  'knife',
+  'kill',
+  'murder',
+  'suicide',
+  'drugs',
+  'cocaine',
+  'heroin',
+  'meth',
+  'alcohol',
+  'beer',
+  'wine',
+  'gambling',
+  'casino',
+  'sex',
+  'erotic',
+  'curse',
+  'fuck',
+  'shit',
+  'bitch',
+  'asshole',
+];
+
+const PROMPT_INJECTION_PATTERNS = [
+  /ignore\s+(all\s+)?(previous|prior|above|system)\s+(instructions|directives|prompts|rules)/i,
+  /disregard\s+(all\s+)?(previous|prior|above|system)\s+(instructions|directives|prompts|rules)/i,
+  /system\s*prompt/i,
+  /you\s+are\s+now\s+(an?\s+)?(unfiltered|different|evil|unrestricted|jailbroken)/i,
+  /reveal\s+(the\s+)?(api\s*key|secret|token|system\s+instruction|prompt)/i,
+  /bypass\s+all\s+(filters|guardrails|safety)/i,
+  /override\s+(system|safety|guardrails)/i,
+  /\b(dan|jailbreak|developer\s+mode)\b/i,
+  /\bdo\s+anything\s+now\b/i,
+  /\bpretend\s+you\s+have\s+no\s+rules\b/i,
+];
+
+function validateKidContentServer(text: string): { valid: boolean; reason?: string } {
+  if (!text || typeof text !== 'string') return { valid: true };
+  const lower = text.toLowerCase();
+  for (const word of INAPPROPRIATE_WORDS) {
+    const regex = new RegExp(`\\b${word}\\b`, 'i');
+    if (regex.test(lower)) {
+      return { valid: false, reason: `Kid-safety filter triggered: prohibited term "${word}".` };
+    }
+  }
+  for (const pattern of PROMPT_INJECTION_PATTERNS) {
+    if (pattern.test(lower)) {
+      return { valid: false, reason: 'Input contains prohibited system instructions or prompt injection attempts.' };
+    }
+  }
+  return { valid: true };
+}
 
 function isSafetyOrBadRequestError(err: any): boolean {
   const msg = (err?.message || '').toLowerCase();
@@ -75,7 +250,199 @@ function isSafetyOrBadRequestError(err: any): boolean {
 
 function sanitizeSafeString(str: any, maxLen = 100): string {
   if (typeof str !== 'string') return '';
-  return str.replace(/<[^>]*>?/gm, '').trim().slice(0, maxLen);
+  return str
+    .replace(/<[^>]*>?/gm, '')
+    .replace(/[`"'{}[\]]/g, ' ')
+    .replace(/[\u0000-\u001F\u007F-\u009F]/g, '')
+    .trim()
+    .slice(0, maxLen);
+}
+
+// -------------------------------------------------------------
+// ZOD SCHEMAS FOR STRICT API INPUT VALIDATION & INJECTION PREVENTION
+// -------------------------------------------------------------
+
+/**
+ * Reusable text validator with strict type checking, sanitization,
+ * length bounds, and proactive kid-safety & prompt injection filtering.
+ */
+function createSafeTextSchema(options: {
+  fieldName: string;
+  min?: number;
+  max: number;
+  required?: boolean;
+}) {
+  const base = z.string().trim();
+
+  let sized = options.min && options.min > 0
+    ? base.min(options.min, `${options.fieldName} must be at least ${options.min} character(s)`)
+    : base;
+
+  sized = sized.max(options.max, `${options.fieldName} cannot exceed ${options.max} characters`);
+
+  return sized
+    .transform((val) => sanitizeSafeString(val, options.max))
+    .superRefine((val, ctx) => {
+      if (!val) {
+        if (options.required) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `${options.fieldName} cannot be empty or contain only invalid characters`,
+          });
+        }
+        return;
+      }
+      const check = validateKidContentServer(val);
+      if (!check.valid) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: check.reason || `Prohibited or unsafe content detected in ${options.fieldName}`,
+        });
+      }
+    });
+}
+
+const PlanBookSchema = z
+  .object({
+    theme: createSafeTextSchema({ fieldName: 'theme', min: 1, max: 120, required: true }).default('space dinosaurs'),
+    childName: createSafeTextSchema({ fieldName: 'childName', min: 0, max: 50 }).default('Little Explorer'),
+    customTitle: createSafeTextSchema({ fieldName: 'customTitle', min: 0, max: 120 }).optional().nullable(),
+    dedicationAuthor: createSafeTextSchema({ fieldName: 'dedicationAuthor', min: 0, max: 60 }).optional().nullable(),
+    userNotes: createSafeTextSchema({ fieldName: 'userNotes', min: 0, max: 300 }).optional().nullable(),
+    pageCount: z
+      .union([z.number(), z.string()])
+      .transform((val) => {
+        const num = Number(val);
+        return isNaN(num) ? 5 : Math.max(1, Math.min(12, Math.round(num)));
+      })
+      .default(5),
+    difficulty: z.enum(['toddler', 'standard', 'intricate']).default('standard'),
+    activityMode: z.enum(['standard', 'color-by-numbers', 'dot-to-dot']).default('standard'),
+    secondaryLanguage: z.string().trim().max(20).optional().nullable(),
+  })
+  .strip();
+
+const InspireThemesSchema = z
+  .object({
+    childName: createSafeTextSchema({ fieldName: 'childName', min: 0, max: 50 }).optional().default(''),
+  })
+  .strip();
+
+const GenerateImageSchema = z
+  .object({
+    prompt: createSafeTextSchema({ fieldName: 'prompt', min: 1, max: 700, required: true }),
+    imageSize: z.enum(['1K', '2K', '4K']).default('1K'),
+    aspectRatio: z.enum(['1:1', '3:4', '4:3', '16:9', '9:16']).default('3:4'),
+    difficulty: z.enum(['toddler', 'standard', 'intricate']).default('standard'),
+    activityMode: z.enum(['standard', 'color-by-numbers', 'dot-to-dot']).default('standard'),
+    modelPreference: z.enum(['auto', 'fast', 'pro']).default('auto'),
+  })
+  .strip();
+
+const GenerateCoverSchema = z
+  .object({
+    theme: createSafeTextSchema({ fieldName: 'theme', min: 0, max: 120 }).default('space dinosaurs'),
+    childName: createSafeTextSchema({ fieldName: 'childName', min: 0, max: 50 }).default('Explorer'),
+    prompt: createSafeTextSchema({ fieldName: 'prompt', min: 0, max: 700 }).optional().nullable(),
+    imageSize: z.enum(['1K', '2K', '4K']).default('1K'),
+    aspectRatio: z.enum(['1:1', '3:4', '4:3', '16:9', '9:16']).default('3:4'),
+    difficulty: z.enum(['toddler', 'standard', 'intricate']).default('standard'),
+    styleVariant: z.enum(['mascot', 'emblem', 'adventure']).default('mascot'),
+    forceVector: z.boolean().default(false),
+  })
+  .strip();
+
+const PhotoToLineArtSchema = z
+  .object({
+    photoBase64: z
+      .string()
+      .min(1, 'Photo data is required')
+      .max(5 * 1024 * 1024, 'Photo payload exceeds maximum allowable size (5MB)')
+      .superRefine((val, ctx) => {
+        const match = val.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+        if (!match) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: 'Invalid photo format. Base64 data URL required (e.g. data:image/png;base64,...)',
+          });
+          return;
+        }
+        const mime = match[1].toLowerCase();
+        if (!['image/jpeg', 'image/jpg', 'image/png', 'image/webp'].includes(mime)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: 'Unsupported image type. Only JPG, PNG, and WebP are allowed.',
+          });
+        }
+      }),
+    subjectType: z.enum(['child', 'pet', 'toy', 'custom']).default('child'),
+    difficulty: z.enum(['toddler', 'standard', 'intricate']).default('standard'),
+    childName: createSafeTextSchema({ fieldName: 'childName', min: 0, max: 50 }).default('Hero'),
+    theme: createSafeTextSchema({ fieldName: 'theme', min: 0, max: 80 }).default('adventure'),
+    sceneSetting: createSafeTextSchema({ fieldName: 'sceneSetting', min: 0, max: 200 }).default(
+      'exploring a whimsical wonderland'
+    ),
+    parentConsentToken: z.string().optional(),
+  })
+  .strip();
+
+const ChatSchema = z
+  .object({
+    messages: z
+      .array(
+        z.object({
+          role: z
+            .string()
+            .transform((r) => (r === 'assistant' || r === 'model' ? 'model' : 'user')),
+          content: createSafeTextSchema({ fieldName: 'message content', min: 1, max: 600, required: true }),
+        })
+      )
+      .min(1, 'At least one message is required')
+      .max(20, 'Conversation depth limited to 20 messages'),
+    model: z.string().max(50).default('gemini-3.8-flash'),
+    role: z.enum(['companion', 'complex_storyteller', 'quick_sparks']).default('companion'),
+    context: z
+      .object({
+        theme: createSafeTextSchema({ fieldName: 'context theme', min: 0, max: 100 }).optional(),
+        childName: createSafeTextSchema({ fieldName: 'context childName', min: 0, max: 50 }).optional(),
+      })
+      .optional()
+      .default({}),
+  })
+  .strip();
+
+const VerifyParentalConsentSchema = z
+  .object({
+    guardianRole: z.enum(['parent', 'guardian', 'educator']).default('parent'),
+    childName: createSafeTextSchema({ fieldName: 'childName', min: 0, max: 50 }).optional().default(''),
+    coppaConfirmed: z.boolean().refine((val) => val === true, {
+      message: 'COPPA confirmation is required to issue a parental consent verification token.',
+    }),
+  })
+  .strip();
+
+type ValidationResult<T> =
+  | { success: true; data: T; error?: undefined; issues?: undefined }
+  | { success: false; data?: undefined; error: string; issues: { field: string; message: string }[] };
+
+function validateWithZod<T extends z.ZodTypeAny>(
+  schema: T,
+  data: unknown
+): ValidationResult<z.infer<T>> {
+  const result = schema.safeParse(data);
+  if (!result.success) {
+    const issues = result.error.issues.map((i) => ({
+      field: i.path.join('.') || 'body',
+      message: i.message,
+    }));
+    const firstMessage = issues[0]?.message || 'Invalid input data';
+    return {
+      success: false,
+      error: `Input validation failed: ${firstMessage}`,
+      issues,
+    };
+  }
+  return { success: true, data: result.data };
 }
 
 // Lazy initialization of GoogleGenAI
@@ -98,21 +465,35 @@ function getGenAI(): GoogleGenAI {
   return aiClient;
 }
 
-// Health check endpoint
-app.get('/api/health', (req, res) => {
+// Health check endpoint - safe, never exposes raw keys
+app.get('/api/health', (_req, res) => {
   res.json({
     status: 'ok',
     hasApiKey: Boolean(process.env.GEMINI_API_KEY),
   });
 });
 
-// Project source export endpoint (creates a clean zip excluding node_modules and .git)
-app.get('/api/download-project', (req, res) => {
+// Project source export endpoint with rate limiting, caching, and clean filtering
+app.get('/api/download-project', downloadRateLimiter, (_req, res) => {
   try {
     const zipPath = path.join('/tmp', 'project-source.zip');
-    const pyScript = `
+    let shouldRegenerate = true;
+
+    // Cache check: if zip was generated within the last 60 seconds, reuse it
+    try {
+      if (fs.existsSync(zipPath)) {
+        const stats = fs.statSync(zipPath);
+        const ageMs = Date.now() - stats.mtimeMs;
+        if (ageMs < 60 * 1000 && stats.size > 1000) {
+          shouldRegenerate = false;
+        }
+      }
+    } catch {}
+
+    if (shouldRegenerate) {
+      const pyScript = `
 import zipfile, os
-base_dir = '/app/applet'
+base_dir = os.path.abspath(os.getcwd())
 zip_path = '/tmp/project-source.zip'
 exclude_dirs = {'node_modules', '.git', 'dist', 'build', '.cache'}
 exclude_files = {'.env', 'project-source.zip'}
@@ -126,30 +507,68 @@ with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
             rel_path = os.path.relpath(full_path, base_dir)
             zipf.write(full_path, rel_path)
 `;
-    execSync(`python3 -c "${pyScript.replace(/"/g, '\\"')}"`);
+      execSync(`python3 -c "${pyScript.replace(/"/g, '\\"')}"`);
+    }
+
     res.setHeader('Content-Type', 'application/zip');
     res.setHeader('Content-Disposition', 'attachment; filename="coloring-book-studio-latest.zip"');
     const fileStream = fs.createReadStream(zipPath);
     fileStream.pipe(res);
   } catch (err: any) {
-    res.status(500).json({ error: 'Failed to generate project archive', details: err?.message });
+    console.error('Failed to generate project archive:', err?.message);
+    res.status(500).json({ error: 'Failed to generate project archive' });
   }
 });
 
 // Handler for both /api/plan-book and /api/generate-plan
 const handlePlanBook: express.RequestHandler = async (req, res) => {
   try {
-    const theme = sanitizeSafeString(req.body?.theme, 100) || 'space dinosaurs';
-    const childName = sanitizeSafeString(req.body?.childName, 40) || 'Little Explorer';
-    const customTitle = sanitizeSafeString(req.body?.customTitle, 100);
-    const dedicationAuthor = sanitizeSafeString(req.body?.dedicationAuthor, 60);
-    const userNotes = sanitizeSafeString(req.body?.userNotes, 250);
-    const pageCount = req.body?.pageCount;
-    const difficulty = req.body?.difficulty || 'standard';
-    const activityMode = req.body?.activityMode || 'standard';
-    const secondaryLanguage = sanitizeSafeString(req.body?.secondaryLanguage, 15);
+    const validationResult = validateWithZod(PlanBookSchema, req.body);
+    if (!validationResult.success) {
+      return res.status(400).json({ success: false, error: validationResult.error, issues: validationResult.issues });
+    }
 
-    const validPageCount = Math.max(1, Math.min(12, Number(pageCount) || 5));
+    const {
+      theme: rawTheme,
+      childName: rawChildName,
+      customTitle: rawCustomTitle,
+      dedicationAuthor: rawDedicationAuthor,
+      userNotes: rawUserNotes,
+      pageCount: validPageCount,
+      difficulty,
+      activityMode,
+      secondaryLanguage: rawSecondaryLanguage,
+    } = validationResult.data;
+
+    const theme = sanitizeSafeString(rawTheme, 100) || 'space dinosaurs';
+    const childName = sanitizeSafeString(rawChildName, 40) || 'Little Explorer';
+    const customTitle = rawCustomTitle ? sanitizeSafeString(rawCustomTitle, 100) : '';
+    const dedicationAuthor = rawDedicationAuthor ? sanitizeSafeString(rawDedicationAuthor, 60) : '';
+    const userNotes = rawUserNotes ? sanitizeSafeString(rawUserNotes, 250) : '';
+    const secondaryLanguage = rawSecondaryLanguage ? sanitizeSafeString(rawSecondaryLanguage, 15) : '';
+
+    // Validate inputs for kid-safety and prompt injection
+    const themeCheck = validateKidContentServer(theme);
+    if (!themeCheck.valid) {
+      return res.status(400).json({ success: false, error: themeCheck.reason });
+    }
+    const nameCheck = validateKidContentServer(childName);
+    if (!nameCheck.valid) {
+      return res.status(400).json({ success: false, error: nameCheck.reason });
+    }
+    if (customTitle) {
+      const titleCheck = validateKidContentServer(customTitle);
+      if (!titleCheck.valid) {
+        return res.status(400).json({ success: false, error: titleCheck.reason });
+      }
+    }
+    if (userNotes) {
+      const notesCheck = validateKidContentServer(userNotes);
+      if (!notesCheck.valid) {
+        return res.status(400).json({ success: false, error: notesCheck.reason });
+      }
+    }
+
     const explicitTitle = typeof customTitle === 'string' ? customTitle.trim() : '';
     const cleanAuthor = typeof dedicationAuthor === 'string' ? dedicationAuthor.trim() : '';
     const ai = getGenAI();
@@ -295,12 +714,14 @@ CRITICAL RULES:
     });
   } catch (error: any) {
     console.error('Error planning book:', error);
-    const safeError = isSafetyOrBadRequestError(error)
+    const isSafety = isSafetyOrBadRequestError(error);
+    const safeError = isSafety
       ? 'Theme was flagged by content safety filters. Please choose another fun topic.'
       : 'Failed to create coloring book outline. Please try again.';
-    return res.status(500).json({
+    return res.status(isSafety ? 400 : 500).json({
       success: false,
       error: safeError,
+      isSafetyBlocked: isSafety,
     });
   }
 };
@@ -309,10 +730,21 @@ app.post('/api/plan-book', planRateLimiter, handlePlanBook);
 app.post('/api/generate-plan', planRateLimiter, handlePlanBook);
 
 // Endpoint: AI-powered creative trending theme inspiration based on child's name
-app.post('/api/inspire-themes', async (req, res) => {
+app.post('/api/inspire-themes', inspirationRateLimiter, async (req, res) => {
   try {
-    const { childName = '' } = req.body;
-    const cleanName = typeof childName === 'string' ? childName.trim() : '';
+    const validationResult = validateWithZod(InspireThemesSchema, req.body);
+    if (!validationResult.success) {
+      return res.status(400).json({ success: false, error: validationResult.error, issues: validationResult.issues });
+    }
+
+    const cleanName = sanitizeSafeString(validationResult.data.childName || '', 40);
+
+    if (cleanName) {
+      const nameCheck = validateKidContentServer(cleanName);
+      if (!nameCheck.valid) {
+        return res.status(400).json({ success: false, error: nameCheck.reason });
+      }
+    }
     const ai = getGenAI();
 
     const prompt = `You are an imaginative children's book author and coloring book designer.
@@ -419,7 +851,6 @@ Guidelines:
       success: true,
       themes: fallbackThemes,
       isFallback: true,
-      errorNotice: error.message,
     });
   }
 });
@@ -427,17 +858,23 @@ Guidelines:
 // Endpoint: Generate thick-line art image using gemini-3-pro-image-preview with safety guardrails
 app.post('/api/generate-image', imageRateLimiter, async (req, res) => {
   try {
-    const rawPrompt = typeof req.body?.prompt === 'string' ? req.body.prompt.trim().slice(0, 700) : '';
-    const {
-      imageSize = '1K', // "1K", "2K", or "4K"
-      aspectRatio = '3:4', // 3:4 is standard portrait for printable pages
-      difficulty = 'standard',
-      activityMode = 'standard',
-      modelPreference = 'auto', // 'fast' (gemini-3.1-flash-image) | 'pro' (gemini-3-pro-image)
-    } = req.body;
+    const parsed = validateWithZod(GenerateImageSchema, req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ success: false, error: parsed.error, issues: parsed.issues });
+    }
 
-    if (!rawPrompt) {
-      return res.status(400).json({ success: false, error: 'A valid coloring prompt is required.' });
+    const {
+      prompt: rawPrompt,
+      imageSize,
+      aspectRatio,
+      difficulty,
+      activityMode,
+      modelPreference,
+    } = parsed.data;
+
+    const promptCheck = validateKidContentServer(rawPrompt);
+    if (!promptCheck.valid) {
+      return res.status(400).json({ success: false, error: promptCheck.reason });
     }
 
     const ai = getGenAI();
@@ -532,12 +969,14 @@ app.post('/api/generate-image', imageRateLimiter, async (req, res) => {
     });
   } catch (error: any) {
     console.error('Error generating image:', error);
-    const safeErrorMsg = isSafetyOrBadRequestError(error)
+    const isSafety = isSafetyOrBadRequestError(error);
+    const safeErrorMsg = isSafety
       ? 'This scene was flagged by content safety filters. Please try a different kid-friendly idea.'
       : 'Drawing generation is temporarily unavailable. Please try again.';
-    return res.status(500).json({
+    return res.status(isSafety ? 400 : 500).json({
       success: false,
       error: safeErrorMsg,
+      isSafetyBlocked: isSafety,
     });
   }
 });
@@ -545,19 +984,33 @@ app.post('/api/generate-image', imageRateLimiter, async (req, res) => {
 // Endpoint: Generate specialized thematic cover illustration accompanying child's name
 app.post('/api/generate-cover', imageRateLimiter, async (req, res) => {
   try {
-    const rawTheme = sanitizeSafeString(req.body?.theme, 100) || 'space dinosaurs';
-    const rawChildName = sanitizeSafeString(req.body?.childName, 40) || 'Explorer';
-    const {
-      prompt,
-      imageSize = '1K',
-      aspectRatio = '3:4',
-      difficulty = 'standard',
-      styleVariant = 'mascot',
-      forceVector = false,
-    } = req.body;
+    const parsed = validateWithZod(GenerateCoverSchema, req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ success: false, error: parsed.error, issues: parsed.issues });
+    }
 
-    const validSizes = ['1K', '2K', '4K'];
-    const chosenSize = validSizes.includes(imageSize) ? imageSize : '1K';
+    const {
+      theme: inputTheme,
+      childName: inputChildName,
+      prompt,
+      imageSize: chosenSize,
+      aspectRatio,
+      difficulty,
+      styleVariant,
+      forceVector,
+    } = parsed.data;
+
+    const rawTheme = sanitizeSafeString(inputTheme, 100) || 'space dinosaurs';
+    const rawChildName = sanitizeSafeString(inputChildName, 40) || 'Explorer';
+
+    const themeCheck = validateKidContentServer(rawTheme);
+    if (!themeCheck.valid) return res.status(400).json({ success: false, error: themeCheck.reason });
+    const nameCheck = validateKidContentServer(rawChildName);
+    if (!nameCheck.valid) return res.status(400).json({ success: false, error: nameCheck.reason });
+    if (prompt) {
+      const promptCheck = validateKidContentServer(prompt);
+      if (!promptCheck.valid) return res.status(400).json({ success: false, error: promptCheck.reason });
+    }
 
     // If user requested vector illustration or no AI key
     if (forceVector || !process.env.GEMINI_API_KEY) {
@@ -658,37 +1111,89 @@ app.post('/api/generate-cover', imageRateLimiter, async (req, res) => {
   }
 });
 
-// Endpoint: Convert child or pet photo into personalized coloring book line-art with strict size caps
-app.post('/api/photo-to-line-art', imageRateLimiter, async (req, res) => {
+// Endpoint: Issue cryptographically signed parental consent verification token (COPPA / GDPR-K)
+app.post('/api/verify-parental-consent', consentRateLimiter, (req, res) => {
   try {
-    const {
-      photoBase64,
-      subjectType = 'child', // 'child' | 'pet' | 'toy' | 'custom'
-      difficulty = 'standard',
-    } = req.body;
-
-    const childName = sanitizeSafeString(req.body?.childName, 40) || 'Hero';
-    const theme = sanitizeSafeString(req.body?.theme, 60) || 'adventure';
-    const sceneSetting = sanitizeSafeString(req.body?.sceneSetting, 150) || 'exploring a whimsical wonderland';
-
-    if (!photoBase64 || typeof photoBase64 !== 'string') {
-      return res.status(400).json({ success: false, error: 'Photo data is required' });
-    }
-
-    // Strict payload cap: base64 string must not exceed 5MB
-    if (photoBase64.length > 5 * 1024 * 1024) {
+    const validationResult = validateWithZod(VerifyParentalConsentSchema, req.body);
+    if (!validationResult.success) {
       return res.status(400).json({
         success: false,
-        error: 'Photo is too large. Please use a compressed photo under 4MB.',
+        error: validationResult.error,
+        issues: validationResult.issues,
       });
     }
 
-    const ai = getGenAI();
+    const { guardianRole, childName } = validationResult.data;
+    const cleanChildName = sanitizeSafeString(childName || '', 40);
+    const { token, expiresAt } = createConsentToken({ guardianRole, childName: cleanChildName });
+    return res.json({
+      success: true,
+      consentToken: token,
+      expiresAt,
+    });
+  } catch (error: any) {
+    console.error('Failed to issue parental consent token:', error);
+    return res.status(500).json({ success: false, error: 'Could not issue parental consent token.' });
+  }
+});
 
-    // Clean base64 string
+// Endpoint: Convert child or pet photo into personalized coloring book line-art with strict size caps
+app.post('/api/photo-to-line-art', imageRateLimiter, async (req, res) => {
+  try {
+    const parsed = validateWithZod(PhotoToLineArtSchema, req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ success: false, error: parsed.error, issues: parsed.issues });
+    }
+
+    // Cryptographic server-side parental consent enforcement (COPPA)
+    const consentHeader = req.headers['x-parental-consent-token'] as string | undefined;
+    const rawConsentToken = parsed.data.parentConsentToken || consentHeader;
+    const consentCheck = verifyConsentToken(rawConsentToken);
+    if (!consentCheck.valid) {
+      return res.status(403).json({
+        success: false,
+        error: consentCheck.reason,
+        isConsentRequired: true,
+      });
+    }
+
+    const {
+      photoBase64,
+      subjectType,
+      difficulty,
+      childName: rawChildName,
+      theme: rawTheme,
+      sceneSetting: rawSceneSetting,
+    } = parsed.data;
+
+    const childName = sanitizeSafeString(rawChildName, 40) || 'Hero';
+    const theme = sanitizeSafeString(rawTheme, 60) || 'adventure';
+    const sceneSetting = sanitizeSafeString(rawSceneSetting, 150) || 'exploring a whimsical wonderland';
+
+    // Validate text inputs for safety
+    const nameCheck = validateKidContentServer(childName);
+    if (!nameCheck.valid) return res.status(400).json({ success: false, error: nameCheck.reason });
+    const themeCheck = validateKidContentServer(theme);
+    if (!themeCheck.valid) return res.status(400).json({ success: false, error: themeCheck.reason });
+    const sceneCheck = validateKidContentServer(sceneSetting);
+    if (!sceneCheck.valid) return res.status(400).json({ success: false, error: sceneCheck.reason });
+
+    // Validate MIME type strictly against supported image types
     const match = photoBase64.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
-    const mimeType = match ? match[1] : 'image/jpeg';
-    const base64Data = match ? match[2] : photoBase64;
+    if (!match) {
+      return res.status(400).json({ success: false, error: 'Invalid photo format. Base64 data URL required.' });
+    }
+    const mimeType = match[1].toLowerCase();
+    const allowedMimes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+    if (!allowedMimes.includes(mimeType)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Unsupported image type. Please provide a JPG, PNG, or WebP photo.',
+      });
+    }
+    const base64Data = match[2];
+
+    const ai = getGenAI();
 
     let subjectPrompt = `Turn the ${subjectType} from this reference photo into the beloved starring hero named "${childName}" in a children's coloring book scene set in: ${sceneSetting} (${theme} theme).`;
     if (subjectType === 'pet') {
@@ -779,12 +1284,14 @@ Style directives:
     });
   } catch (error: any) {
     console.error('Error in photo-to-line-art:', error);
-    const safeError = isSafetyOrBadRequestError(error)
+    const isSafety = isSafetyOrBadRequestError(error);
+    const safeError = isSafety
       ? 'Photo could not be converted due to safety policy. Please try a different photo.'
       : 'Failed to convert photo to line art. You can use the local outline filter!';
-    return res.status(500).json({
+    return res.status(isSafety ? 400 : 500).json({
       success: false,
       error: safeError,
+      isSafetyBlocked: isSafety,
     });
   }
 });
@@ -792,16 +1299,17 @@ Style directives:
 // Endpoint: Multi-turn Chat with Gemini with strict role restrictions and abuse prevention
 app.post('/api/chat', chatRateLimiter, async (req, res) => {
   try {
+    const parsed = validateWithZod(ChatSchema, req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ success: false, error: parsed.error, issues: parsed.issues });
+    }
+
     const {
-      messages = [],
+      messages,
       model = 'gemini-3.8-flash',
       role = 'companion',
       context = {},
-    } = req.body;
-
-    if (!Array.isArray(messages) || messages.length === 0) {
-      return res.status(400).json({ success: false, error: 'Messages list is required' });
-    }
+    } = parsed.data;
 
     const safeTheme = sanitizeSafeString(context?.theme, 80);
     const safeChildName = sanitizeSafeString(context?.childName, 40);
@@ -835,9 +1343,24 @@ STRICT DOMAIN BOUNDARIES:
     }
 
     // Limit conversation depth (max 10 recent messages) and max text per message (max 500 chars)
-    const contents = messages.slice(-10).map((m: any) => ({
-      role: m.role === 'user' ? 'user' : 'model',
-      parts: [{ text: sanitizeSafeString(m.content || '', 500) }],
+    const sanitizedMessages: { role: string; content: string }[] = [];
+    for (const m of messages.slice(-10)) {
+      const cleanContent = sanitizeSafeString(m.content || '', 500);
+      if (m.role === 'user') {
+        const check = validateKidContentServer(cleanContent);
+        if (!check.valid) {
+          return res.status(400).json({ success: false, error: check.reason });
+        }
+      }
+      sanitizedMessages.push({
+        role: m.role === 'user' ? 'user' : 'model',
+        content: cleanContent,
+      });
+    }
+
+    const contents = sanitizedMessages.map((m) => ({
+      role: m.role,
+      parts: [{ text: m.content }],
     }));
 
     const response = await ai.models.generateContent({

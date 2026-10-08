@@ -19,6 +19,19 @@ export function escapeHtml(unsafe: string = ''): string {
 }
 
 /**
+ * Escapes characters for strict XML/SVG text nodes and attributes to prevent SVG injection
+ */
+export function escapeXml(unsafe: string = ''): string {
+  if (!unsafe || typeof unsafe !== 'string') return '';
+  return unsafe
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+/**
  * Strips dangerous HTML tags and control characters, enforces length limits
  */
 export function sanitizeInput(str: string = '', maxLength = 100): string {
@@ -66,6 +79,18 @@ const INAPPROPRIATE_WORDS = [
 ];
 
 /**
+ * Prompt injection patterns to neutralize in AI prompts
+ */
+const PROMPT_INJECTION_PATTERNS = [
+  /ignore\s+(all\s+)?(previous|prior|above)\s+instructions/i,
+  /system\s*prompt/i,
+  /you\s+are\s+now\s+(an\s+unfiltered|a\s+different)/i,
+  /reveal\s+(the\s+)?(api\s+key|secret|token)/i,
+  /bypass\s+all\s+(filters|guardrails)/i,
+  /override\s+system/i,
+];
+
+/**
  * Check if a theme or prompt contains inappropriate content for a children's app
  */
 export function validateKidContent(text: string): { valid: boolean; reason?: string } {
@@ -85,5 +110,27 @@ export function validateKidContent(text: string): { valid: boolean; reason?: str
     }
   }
 
+  for (const pattern of PROMPT_INJECTION_PATTERNS) {
+    if (pattern.test(lower)) {
+      return {
+        valid: false,
+        reason: 'Input contains disallowed system instructions or prompt injection attempts.',
+      };
+    }
+  }
+
   return { valid: true };
+}
+
+/**
+ * Neutralizes potential prompt injection markers and control characters
+ */
+export function sanitizePromptText(text: string = '', maxLen = 300): string {
+  if (!text || typeof text !== 'string') return '';
+  return text
+    .replace(/[`"'\\{}[\]<>]/g, ' ') // Neutralize brackets, quotes, and backticks
+    .replace(/[\u0000-\u001F\u007F-\u009F]/g, '') // Strip control characters
+    .replace(/\s+/g, ' ') // Collapse multiple spaces
+    .trim()
+    .slice(0, maxLen);
 }

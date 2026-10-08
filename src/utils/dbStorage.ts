@@ -23,6 +23,7 @@ export interface ParentalConsentRecord {
   childName?: string;
   guardianType?: 'parent' | 'guardian' | 'educator';
   version: string;
+  consentToken?: string;
 }
 
 // In-memory fast caches to keep synchronous UI reads instantaneous and avoid flickers
@@ -31,6 +32,17 @@ let cachedFavorites: FavoriteBook[] = [];
 let cachedHistory: ColoringBook[] = [];
 let cachedConsent: ParentalConsentRecord | null = null;
 let isInitialized = false;
+let initPromise: Promise<void> | null = null;
+
+/**
+ * Ensures storage initialization has fully resolved before executing reads/writes.
+ */
+export function storageReady(): Promise<void> {
+  if (!initPromise) {
+    initPromise = initStorage();
+  }
+  return initPromise;
+}
 
 /**
  * Initialize storage from IndexedDB on startup and migrate legacy localStorage if found.
@@ -411,16 +423,33 @@ export async function getParentalConsentAsync(): Promise<boolean> {
   return cachedConsent?.granted === true;
 }
 
+export async function getParentalConsentRecordAsync(): Promise<ParentalConsentRecord | null> {
+  await storageReady();
+  try {
+    const record = await get<ParentalConsentRecord>(KEY_PARENTAL_CONSENT, consentStore);
+    if (record && record.granted) {
+      cachedConsent = record;
+      return record;
+    }
+  } catch (e) {
+    console.warn('Async get consent record failed:', e);
+  }
+  return cachedConsent;
+}
+
 export async function saveParentalConsentAsync(details?: {
   childName?: string;
   guardianType?: 'parent' | 'guardian' | 'educator';
+  consentToken?: string;
 }): Promise<ParentalConsentRecord> {
+  await storageReady();
   const record: ParentalConsentRecord = {
     granted: true,
     timestamp: Date.now(),
     childName: details?.childName,
     guardianType: details?.guardianType || 'parent',
     version: '1.0',
+    consentToken: details?.consentToken,
   };
 
   cachedConsent = record;
@@ -446,5 +475,45 @@ export async function revokeParentalConsentAsync(): Promise<void> {
     }
   } catch (err) {
     console.warn('Failed to revoke parental consent in IndexedDB:', err);
+  }
+}
+
+/**
+ * Complete COPPA Data Purge / Right to Erasure
+ * Wipes all stored books, illustrations, favorites, session history, and parental consent
+ * from IndexedDB, localStorage, and in-memory caches.
+ */
+export async function purgeAllChildData(): Promise<void> {
+  cachedAutosave = null;
+  cachedFavorites = [];
+  cachedHistory = [];
+  cachedConsent = null;
+
+  try {
+    await clear(bookStore);
+    await clear(consentStore);
+  } catch (err) {
+    console.warn('Error clearing IndexedDB stores:', err);
+  }
+
+  if (typeof localStorage !== 'undefined') {
+    try {
+      localStorage.removeItem('coloring_book_autosaved_session_v1');
+      localStorage.removeItem('coloring_book_favorites_v1');
+      localStorage.removeItem('colorcraft_parental_consent_v1');
+    } catch (e) {}
+  }
+
+  if (typeof sessionStorage !== 'undefined') {
+    try {
+      sessionStorage.removeItem('coloring_book_session_history_v1');
+    } catch (e) {}
+  }
+
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('coloring_book_autosave_cleared'));
+    window.dispatchEvent(new CustomEvent('coloring_book_favorites_updated'));
+    window.dispatchEvent(new CustomEvent('coloring_book_session_history_updated', { detail: [] }));
+    window.dispatchEvent(new CustomEvent('parental_consent_updated', { detail: null }));
   }
 }

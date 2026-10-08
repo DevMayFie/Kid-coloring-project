@@ -193,10 +193,8 @@ export const BonusActivitiesModal: React.FC<BonusActivitiesModalProps> = ({
     const printContent = document.getElementById('printable-activity-sheet');
     if (!printContent) return;
 
-    const printWin = window.open('', '_blank', 'width=800,height=900');
-    if (!printWin) return;
-
-    printWin.document.write(`
+    const htmlContent = `
+      <!DOCTYPE html>
       <html>
         <head>
           <title>${escapeHtml(book.childName)}'s Activity Sheet</title>
@@ -214,13 +212,45 @@ export const BonusActivitiesModal: React.FC<BonusActivitiesModalProps> = ({
           <script>
             window.onload = () => {
               window.print();
-              setTimeout(() => window.close(), 1000);
             };
           </script>
         </body>
       </html>
-    `);
-    printWin.document.close();
+    `;
+
+    try {
+      const printWin = window.open('', '_blank', 'width=800,height=900');
+      if (printWin) {
+        printWin.document.write(htmlContent);
+        printWin.document.close();
+        return;
+      }
+    } catch {}
+
+    // Fallback using hidden iframe
+    const printFrame = document.createElement('iframe');
+    printFrame.style.position = 'fixed';
+    printFrame.style.right = '0';
+    printFrame.style.bottom = '0';
+    printFrame.style.width = '0';
+    printFrame.style.height = '0';
+    printFrame.style.border = '0';
+    document.body.appendChild(printFrame);
+    const frameDoc = printFrame.contentWindow?.document;
+    if (frameDoc) {
+      frameDoc.open();
+      frameDoc.write(htmlContent);
+      frameDoc.close();
+      printFrame.contentWindow?.focus();
+      setTimeout(() => {
+        printFrame.contentWindow?.print();
+        setTimeout(() => {
+          if (document.body.contains(printFrame)) {
+            document.body.removeChild(printFrame);
+          }
+        }, 3000);
+      }, 500);
+    }
   };
 
   if (!isOpen) return null;

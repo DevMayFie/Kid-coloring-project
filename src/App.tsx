@@ -34,6 +34,7 @@ import { createThematicCoverSvg, buildThematicCoverAiPrompt } from './utils/cove
 import { generateColoringBookPdf } from './utils/pdfGenerator';
 import { playChimeSound } from './utils/kidAudio';
 import { escapeHtml } from './utils/security';
+import { storageReady } from './utils/dbStorage';
 import {
   saveBookToLocalStorage,
   getAutosavedSession,

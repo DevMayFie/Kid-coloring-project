@@ -18,7 +18,7 @@ import { playChimeSound } from '../utils/kidAudio';
 import { resizeAndCompressImage } from '../utils/imageCompressor';
 import { sanitizeInput } from '../utils/security';
 import { ParentalConsentModal } from './ParentalConsentModal';
-import { getParentalConsentSync } from '../utils/dbStorage';
+import { getParentalConsentSync, getParentalConsentRecordAsync } from '../utils/dbStorage';
 
 interface PersonalizedHeroModalProps {
   isOpen: boolean;
@@ -111,9 +111,34 @@ export function PersonalizedHeroModal({
     playChimeSound('sparkle');
 
     try {
+      const consentRecord = await getParentalConsentRecordAsync();
+      let token = consentRecord?.consentToken;
+      if (!token) {
+        try {
+          const tokenRes = await fetch('/api/verify-parental-consent', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              guardianRole: consentRecord?.guardianType || 'parent',
+              childName: cleanHeroName,
+              coppaConfirmed: true,
+            }),
+          });
+          const tokenData = await tokenRes.json();
+          if (tokenData.success && tokenData.consentToken) {
+            token = tokenData.consentToken;
+          }
+        } catch (tErr) {
+          console.warn('Could not auto-fetch consent token:', tErr);
+        }
+      }
+
       const res = await fetch('/api/photo-to-line-art', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-parental-consent-token': token || '',
+        },
         body: JSON.stringify({
           photoBase64: photoPreview,
           subjectType,
@@ -121,6 +146,7 @@ export function PersonalizedHeroModal({
           theme: sanitizeInput(theme, 50),
           sceneSetting: `celebrating an epic ${theme} adventure with friendly companion characters`,
           difficulty: 'standard',
+          parentConsentToken: token,
         }),
       });
 

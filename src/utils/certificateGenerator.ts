@@ -3,6 +3,8 @@
  * Renders as a crisp vector SVG data URL suitable for PDF export and web display.
  */
 
+import { escapeXml } from './security';
+
 export interface CertificateData {
   childName: string;
   bookTitle: string;
@@ -12,14 +14,15 @@ export interface CertificateData {
 }
 
 export function generateCertificateDataUrl(data: CertificateData): string {
-  const child = data.childName.trim() || 'Young Artist';
-  const title = data.bookTitle.trim() || 'Creative Coloring Adventure';
-  const today = data.awardDate || new Date().toLocaleDateString('en-US', {
+  const child = escapeXml(data.childName.trim() || 'Young Artist');
+  const title = escapeXml(data.bookTitle.trim() || 'Creative Coloring Adventure');
+  const rawDate = data.awardDate || new Date().toLocaleDateString('en-US', {
     year: 'numeric',
     month: 'long',
     day: 'numeric',
   });
-  const presenter = data.presenter || 'Parent / Teacher';
+  const today = escapeXml(rawDate);
+  const presenter = escapeXml((data.presenter || 'Parent / Teacher').toUpperCase());
 
   const svg = `
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600" width="800" height="600">
@@ -121,7 +124,7 @@ export function generateCertificateDataUrl(data: CertificateData): string {
     <g transform="translate(560, 470)">
       <line x1="0" y1="0" x2="170" y2="0" stroke="#4B5563" stroke-width="1.5" />
       <text x="85" y="-10" font-family="Georgia, serif" font-style="italic" font-size="14" fill="#1E40AF" text-anchor="middle">ColorCraft Academy</text>
-      <text x="85" y="20" font-family="sans-serif" font-size="11" fill="#6B7280" text-anchor="middle" font-weight="bold">${presenter.toUpperCase()} SIGNATURE</text>
+      <text x="85" y="20" font-family="sans-serif" font-size="11" fill="#6B7280" text-anchor="middle" font-weight="bold">${presenter} SIGNATURE</text>
     </g>
 
     <!-- Cheerful encouragement bottom footer -->

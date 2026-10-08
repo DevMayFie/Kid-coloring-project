@@ -44,9 +44,8 @@ export function CertificateModal({
 
   const handlePrint = () => {
     playChimeSound('fanfare');
-    const printWindow = window.open('', '_blank');
-    if (!printWindow) return;
-    printWindow.document.write(`
+    const htmlContent = `
+      <!DOCTYPE html>
       <html>
         <head>
           <title>Certificate of Completion - ${escapeHtml(recipientName)}</title>
@@ -57,11 +56,44 @@ export function CertificateModal({
           </style>
         </head>
         <body>
-          <img src="${certificateSvgUrl}" onload="window.print(); window.close();" />
+          <img src="${certificateSvgUrl}" onload="window.print();" />
         </body>
       </html>
-    `);
-    printWindow.document.close();
+    `;
+
+    try {
+      const printWindow = window.open('', '_blank');
+      if (printWindow) {
+        printWindow.document.write(htmlContent);
+        printWindow.document.close();
+        return;
+      }
+    } catch {}
+
+    // Fallback if popup blocked by iframe
+    const printFrame = document.createElement('iframe');
+    printFrame.style.position = 'fixed';
+    printFrame.style.right = '0';
+    printFrame.style.bottom = '0';
+    printFrame.style.width = '0';
+    printFrame.style.height = '0';
+    printFrame.style.border = '0';
+    document.body.appendChild(printFrame);
+    const frameDoc = printFrame.contentWindow?.document;
+    if (frameDoc) {
+      frameDoc.open();
+      frameDoc.write(htmlContent);
+      frameDoc.close();
+      printFrame.contentWindow?.focus();
+      setTimeout(() => {
+        printFrame.contentWindow?.print();
+        setTimeout(() => {
+          if (document.body.contains(printFrame)) {
+            document.body.removeChild(printFrame);
+          }
+        }, 3000);
+      }, 500);
+    }
   };
 
   const handleDownloadImage = () => {

@@ -42,9 +42,29 @@ export const ParentalConsentModal: React.FC<ParentalConsentModalProps> = ({
 
     setIsSubmitting(true);
     try {
+      let serverToken: string | undefined;
+      try {
+        const res = await fetch('/api/verify-parental-consent', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            guardianRole: guardianType,
+            childName: childName?.trim() || undefined,
+            coppaConfirmed: true,
+          }),
+        });
+        const data = await res.json();
+        if (data.success && data.consentToken) {
+          serverToken = data.consentToken;
+        }
+      } catch (tokenErr) {
+        console.warn('Could not retrieve remote consent token:', tokenErr);
+      }
+
       await saveParentalConsentAsync({
         childName: childName?.trim() || undefined,
         guardianType,
+        consentToken: serverToken,
       });
       playChimeSound('sparkle');
       onConsentGiven();
