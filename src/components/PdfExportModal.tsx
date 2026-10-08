@@ -109,11 +109,34 @@ export const PdfExportModal: React.FC<PdfExportModalProps> = ({
       const blob = doc.output('blob');
       const blobUrl = URL.createObjectURL(blob);
 
-      // Open printable view in new window or iframe
-      const printWindow = window.open(blobUrl, '_blank');
-      if (printWindow) {
-        printWindow.focus();
-      }
+      // Open printable view using hidden iframe
+      const printFrame = document.createElement('iframe');
+      printFrame.style.position = 'fixed';
+      printFrame.style.right = '0';
+      printFrame.style.bottom = '0';
+      printFrame.style.width = '0';
+      printFrame.style.height = '0';
+      printFrame.style.border = '0';
+      printFrame.src = blobUrl;
+      document.body.appendChild(printFrame);
+      printFrame.onload = () => {
+        try {
+          printFrame.contentWindow?.focus();
+          printFrame.contentWindow?.print();
+        } catch {
+          // If printing within iframe is restricted, trigger direct download
+          const dlLink = document.createElement('a');
+          dlLink.href = blobUrl;
+          dlLink.download = `${book.childName || 'coloring-book'}.pdf`;
+          dlLink.click();
+        }
+        setTimeout(() => {
+          if (document.body.contains(printFrame)) {
+            document.body.removeChild(printFrame);
+          }
+          URL.revokeObjectURL(blobUrl);
+        }, 10000);
+      };
 
       setIsProcessing(false);
       onClose();

@@ -218,16 +218,7 @@ export const BonusActivitiesModal: React.FC<BonusActivitiesModalProps> = ({
       </html>
     `;
 
-    try {
-      const printWin = window.open('', '_blank', 'width=800,height=900');
-      if (printWin) {
-        printWin.document.write(htmlContent);
-        printWin.document.close();
-        return;
-      }
-    } catch {}
-
-    // Fallback using hidden iframe
+    // Direct print using clean sandboxed iframe without popup windows
     const printFrame = document.createElement('iframe');
     printFrame.style.position = 'fixed';
     printFrame.style.right = '0';
@@ -243,7 +234,11 @@ export const BonusActivitiesModal: React.FC<BonusActivitiesModalProps> = ({
       frameDoc.close();
       printFrame.contentWindow?.focus();
       setTimeout(() => {
-        printFrame.contentWindow?.print();
+        try {
+          printFrame.contentWindow?.print();
+        } catch (e) {
+          console.warn('Iframe print warning:', e);
+        }
         setTimeout(() => {
           if (document.body.contains(printFrame)) {
             document.body.removeChild(printFrame);

@@ -255,13 +255,19 @@ export const PrintPreviewModal: React.FC<PrintPreviewModalProps> = ({
           printFrame.contentWindow?.focus();
           printFrame.contentWindow?.print();
         } catch (e) {
-          const printWindow = window.open(pdfBlobUrl, '_blank');
-          if (printWindow) printWindow.focus();
+          console.warn('Iframe print failed, falling back to download:', e);
+          const dlLink = document.createElement('a');
+          dlLink.href = pdfBlobUrl;
+          dlLink.download = `${book.childName || 'coloring-book'}-print.pdf`;
+          dlLink.click();
         }
       };
     } catch (e) {
-      const printWindow = window.open(pdfBlobUrl, '_blank');
-      if (printWindow) printWindow.focus();
+      console.warn('Print iframe error:', e);
+      const dlLink = document.createElement('a');
+      dlLink.href = pdfBlobUrl;
+      dlLink.download = `${book.childName || 'coloring-book'}-print.pdf`;
+      dlLink.click();
     }
   };
 

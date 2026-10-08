@@ -626,13 +626,19 @@ export default function App() {
             printFrame.contentWindow?.focus();
             printFrame.contentWindow?.print();
           } catch (e) {
-            const printWindow = window.open(blobUrl, '_blank');
-            if (printWindow) printWindow.focus();
+            console.warn('Iframe print failed, falling back to download:', e);
+            const dlLink = document.createElement('a');
+            dlLink.href = blobUrl;
+            dlLink.download = `${book.childName || 'coloring'}-page.pdf`;
+            dlLink.click();
           }
         };
       } catch (e) {
-        const printWindow = window.open(blobUrl, '_blank');
-        if (printWindow) printWindow.focus();
+        console.warn('Print frame error:', e);
+        const dlLink = document.createElement('a');
+        dlLink.href = blobUrl;
+        dlLink.download = `${book.childName || 'coloring'}-page.pdf`;
+        dlLink.click();
       }
     } catch (err) {
       console.error('Error printing single page:', err);
@@ -967,12 +973,19 @@ export default function App() {
     }));
   };
 
-  // Direct print printable sticker sheet
+  // Direct print printable sticker sheet using sandboxed hidden iframe
   const handlePrintStickerSheet = () => {
     if (!book.stickerSheet?.imageUrl) return;
-    const printWin = window.open('', '_blank');
-    if (!printWin) return;
-    printWin.document.write(`
+    const printFrame = document.createElement('iframe');
+    printFrame.style.position = 'fixed';
+    printFrame.style.right = '0';
+    printFrame.style.bottom = '0';
+    printFrame.style.width = '0';
+    printFrame.style.height = '0';
+    printFrame.style.border = '0';
+    document.body.appendChild(printFrame);
+
+    const htmlContent = `
       <!DOCTYPE html>
       <html>
         <head>
@@ -985,12 +998,31 @@ export default function App() {
           </style>
         </head>
         <body>
-          <img src="${book.stickerSheet.imageUrl}" onload="window.print(); window.close();" />
+          <img src="${book.stickerSheet.imageUrl}" onload="window.print();" />
           <div class="inst">✂️ Cut along dashed lines with safety scissors and stick onto your colored pages!</div>
         </body>
       </html>
-    `);
-    printWin.document.close();
+    `;
+
+    const frameDoc = printFrame.contentWindow?.document;
+    if (frameDoc) {
+      frameDoc.open();
+      frameDoc.write(htmlContent);
+      frameDoc.close();
+      printFrame.contentWindow?.focus();
+      setTimeout(() => {
+        try {
+          printFrame.contentWindow?.print();
+        } catch (e) {
+          console.warn('Iframe sticker print warning:', e);
+        }
+        setTimeout(() => {
+          if (document.body.contains(printFrame)) {
+            document.body.removeChild(printFrame);
+          }
+        }, 3000);
+      }, 500);
+    }
   };
 
   // Load a saved favorite book configuration

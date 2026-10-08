@@ -61,16 +61,7 @@ export function CertificateModal({
       </html>
     `;
 
-    try {
-      const printWindow = window.open('', '_blank');
-      if (printWindow) {
-        printWindow.document.write(htmlContent);
-        printWindow.document.close();
-        return;
-      }
-    } catch {}
-
-    // Fallback if popup blocked by iframe
+    // Direct print via sandboxed hidden iframe (avoiding window.open popup restrictions)
     const printFrame = document.createElement('iframe');
     printFrame.style.position = 'fixed';
     printFrame.style.right = '0';
@@ -86,7 +77,11 @@ export function CertificateModal({
       frameDoc.close();
       printFrame.contentWindow?.focus();
       setTimeout(() => {
-        printFrame.contentWindow?.print();
+        try {
+          printFrame.contentWindow?.print();
+        } catch (e) {
+          console.warn('Iframe print warning:', e);
+        }
         setTimeout(() => {
           if (document.body.contains(printFrame)) {
             document.body.removeChild(printFrame);

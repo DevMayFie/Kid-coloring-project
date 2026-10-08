@@ -101,7 +101,9 @@ function verifyConsentToken(token: string | undefined): { valid: boolean; payloa
   }
   const [b64Payload, signature] = parts;
   const expectedSig = crypto.createHmac('sha256', CONSENT_SECRET).update(b64Payload).digest('base64url');
-  if (signature !== expectedSig) {
+  const sigBuf = Buffer.from(signature);
+  const expBuf = Buffer.from(expectedSig);
+  if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
     return { valid: false, reason: 'Forged or invalid parental consent signature.' };
   }
   try {
@@ -318,7 +320,7 @@ const PlanBookSchema = z
       .default(5),
     difficulty: z.enum(['toddler', 'standard', 'intricate']).default('standard'),
     activityMode: z.enum(['standard', 'color-by-numbers', 'dot-to-dot']).default('standard'),
-    secondaryLanguage: z.string().trim().max(20).optional().nullable(),
+    secondaryLanguage: z.enum(['en', 'es', 'fr', 'de', 'it', 'pt', 'ja']).optional().nullable(),
   })
   .strip();
 
@@ -399,7 +401,9 @@ const ChatSchema = z
       )
       .min(1, 'At least one message is required')
       .max(20, 'Conversation depth limited to 20 messages'),
-    model: z.string().max(50).default('gemini-3.8-flash'),
+    model: z
+      .enum(['gemini-3.8-flash', 'gemini-3.1-pro-preview', 'gemini-3.1-flash-lite'])
+      .default('gemini-3.8-flash'),
     role: z.enum(['companion', 'complex_storyteller', 'quick_sparks']).default('companion'),
     context: z
       .object({
@@ -496,12 +500,11 @@ import zipfile, os
 base_dir = os.path.abspath(os.getcwd())
 zip_path = '/tmp/project-source.zip'
 exclude_dirs = {'node_modules', '.git', 'dist', 'build', '.cache'}
-exclude_files = {'.env', 'project-source.zip'}
 with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
     for root, dirs, files in os.walk(base_dir):
         dirs[:] = [d for d in dirs if d not in exclude_dirs]
         for f in files:
-            if f in exclude_files:
+            if f.endswith('.zip') or f.startswith('.env'):
                 continue
             full_path = os.path.join(root, f)
             rel_path = os.path.relpath(full_path, base_dir)
@@ -903,7 +906,7 @@ app.post('/api/generate-image', imageRateLimiter, async (req, res) => {
     const chosenSize = validSizes.includes(imageSize) ? imageSize : '1K';
 
     // Model selection: if fast requested or 1K default without 4K, can use flash for speed & unit economics
-    const primaryModel = modelPreference === 'fast' ? 'gemini-3.1-flash-image' : 'gemini-3-pro-image';
+    const primaryModel = modelPreference === 'fast' ? 'gemini-3.1-flash-lite-image' : 'gemini-3-pro-image';
 
     let response;
     try {
@@ -932,7 +935,7 @@ app.post('/api/generate-image', imageRateLimiter, async (req, res) => {
 
       console.warn(`${primaryModel} call encountered issue, attempting secondary fallback:`, primaryErr?.message);
       // Only fallback on transient network/overload errors
-      const fallbackModel = primaryModel === 'gemini-3-pro-image' ? 'gemini-3.1-flash-image' : 'gemini-3-pro-image';
+      const fallbackModel = primaryModel === 'gemini-3-pro-image' ? 'gemini-3.1-flash-lite-image' : 'gemini-3-pro-image';
       response = await ai.models.generateContent({
         model: fallbackModel,
         contents: {
@@ -1053,9 +1056,9 @@ app.post('/api/generate-cover', imageRateLimiter, async (req, res) => {
             isVectorIllustration: true,
           });
         }
-        console.warn('gemini-3-pro-image cover failed, trying gemini-3.1-flash-image fallback:', primaryErr?.message);
+        console.warn('gemini-3-pro-image cover failed, trying gemini-3.1-flash-lite-image fallback:', primaryErr?.message);
         response = await ai.models.generateContent({
-          model: 'gemini-3.1-flash-image',
+          model: 'gemini-3.1-flash-lite-image',
           contents: {
             parts: [{ text: enhancedPrompt }],
           },
@@ -1242,7 +1245,7 @@ Style directives:
       }
       console.warn('Pro image preview failed for photo-to-art, trying flash image fallback:', primaryErr?.message);
       response = await ai.models.generateContent({
-        model: 'gemini-3.1-flash-image',
+        model: 'gemini-3.1-flash-lite-image',
         contents: {
           parts: [
             {
@@ -1368,7 +1371,6 @@ STRICT DOMAIN BOUNDARIES:
       contents,
       config: {
         systemInstruction,
-        temperature: 0.7,
         maxOutputTokens: 800,
       },
     });
