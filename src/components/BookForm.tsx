@@ -248,15 +248,15 @@ export const BookForm: React.FC<BookFormProps> = ({
   };
 
   return (
-    <div className="bg-white rounded-2xl border border-amber-200/90 shadow-sm p-5 sm:p-7">
+    <div className="bg-white dark:bg-slate-900 rounded-2xl border border-amber-200/90 dark:border-slate-800 shadow-sm p-5 sm:p-7 transition-colors">
       <form onSubmit={handleSubmit} className="space-y-6">
         {/* Title and intro banner */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-4 border-b border-gray-100">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-4 border-b border-gray-100 dark:border-slate-800">
           <div>
-            <h2 className="text-xl font-bold text-gray-900 tracking-tight flex items-center gap-2" style={{ fontFamily: "'Fredoka', sans-serif" }}>
-              <span className="text-amber-600">Create a New Coloring Book</span>
+            <h2 className="text-xl font-bold text-gray-900 dark:text-slate-100 tracking-tight flex items-center gap-2" style={{ fontFamily: "'Fredoka', sans-serif" }}>
+              <span className="text-amber-600 dark:text-amber-400">Create a New Coloring Book</span>
             </h2>
-            <p className="text-xs sm:text-sm text-gray-600 mt-0.5">
+            <p className="text-xs sm:text-sm text-gray-600 dark:text-slate-400 mt-0.5">
               Personalized {pageCount}-page story adventure with custom cover, coloring suggestions, fun facts & thick black outlines.
             </p>
           </div>

@@ -279,17 +279,17 @@ export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
   return (
     <div id="coloring-book-viewer" className="space-y-8 pb-28 sm:pb-36 scroll-mt-20">
       {/* Warm, Child-Friendly Storybook Header & View Mode Switcher */}
-      <div className="bg-linear-to-r from-amber-100/90 via-orange-50/80 to-amber-100/70 border border-amber-300/80 rounded-3xl p-4 sm:p-6 shadow-sm flex flex-col lg:flex-row items-start lg:items-center justify-between gap-5">
+      <div className="bg-linear-to-r from-amber-100/90 via-orange-50/80 to-amber-100/70 dark:from-slate-900 dark:via-slate-850 dark:to-slate-900 border border-amber-300/80 dark:border-slate-800 rounded-3xl p-4 sm:p-6 shadow-sm flex flex-col lg:flex-row items-start lg:items-center justify-between gap-5 transition-colors">
         <div className="space-y-1.5 flex-1">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="px-3 py-1 rounded-full bg-amber-600 text-white text-[11px] font-black uppercase tracking-wider shadow-2xs">
               ✨ {book.childName}'s Storybook
             </span>
-            <span className="px-2.5 py-0.5 rounded-full bg-white/90 border border-amber-200 text-amber-950 text-xs font-bold shadow-2xs">
+            <span className="px-2.5 py-0.5 rounded-full bg-white/90 dark:bg-slate-850 border border-amber-200 dark:border-slate-700 text-amber-950 dark:text-amber-300 text-xs font-bold shadow-2xs">
               🎨 {book.pages.length} Pages + Cover
             </span>
             {book.difficulty && (
-              <span className="px-2.5 py-0.5 rounded-full bg-white/90 border border-amber-200 text-amber-900 text-xs font-bold shadow-2xs">
+              <span className="px-2.5 py-0.5 rounded-full bg-white/90 dark:bg-slate-850 border border-amber-200 dark:border-slate-700 text-amber-900 dark:text-amber-300 text-xs font-bold shadow-2xs">
                 {book.difficulty === 'toddler'
                   ? '🖍️ Toddler: Big Bold Lines'
                   : book.difficulty === 'intricate'
@@ -298,10 +298,10 @@ export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
               </span>
             )}
           </div>
-          <h2 className="text-xl sm:text-2xl font-black text-gray-900 tracking-tight" style={{ fontFamily: "'Fredoka', sans-serif" }}>
+          <h2 className="text-xl sm:text-2xl font-black text-gray-900 dark:text-slate-100 tracking-tight" style={{ fontFamily: "'Fredoka', sans-serif" }}>
             {book.title}
           </h2>
-          <p className="text-xs sm:text-sm text-gray-700 italic">
+          <p className="text-xs sm:text-sm text-gray-700 dark:text-slate-300 italic">
             "{book.subtitle}" — <span className="font-medium">{book.dedication}</span>
           </p>
         </div>
@@ -309,7 +309,7 @@ export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
         {/* View Mode Switcher & Favorites */}
         <div className="flex items-center gap-2.5 flex-wrap self-stretch lg:self-auto justify-between lg:justify-end">
           {/* Switcher Pills */}
-          <div className="flex items-center gap-1.5 p-1.5 bg-white/95 rounded-2xl border border-amber-300/80 shadow-xs">
+          <div className="flex items-center gap-1.5 p-1.5 bg-white/95 dark:bg-slate-800 rounded-2xl border border-amber-300/80 dark:border-slate-700 shadow-xs">
             <button
               type="button"
               onClick={() => {
@@ -319,7 +319,7 @@ export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
               className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
                 viewMode === 'grid'
                   ? 'bg-amber-500 text-white shadow-sm ring-1 ring-amber-400 font-black'
-                  : 'text-gray-700 hover:text-gray-900 hover:bg-amber-50'
+                  : 'text-gray-700 dark:text-slate-300 hover:text-gray-900 dark:hover:text-white hover:bg-amber-50 dark:hover:bg-slate-700'
               }`}
             >
               <LayoutGrid className="w-3.5 h-3.5" />

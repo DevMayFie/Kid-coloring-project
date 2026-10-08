@@ -15,6 +15,10 @@ import {
   Compass,
   Volume2,
   VolumeX,
+  Sun,
+  Moon,
+  FolderDown,
+  FileCode,
 } from 'lucide-react';
 import { BrandLogo, getPresetLogoDataUrl } from './BrandLogo';
 import { BrandIntegration } from '../types';
@@ -37,6 +41,8 @@ interface HeaderProps {
   pageCount: number;
   historyCount?: number;
   onScrollToHistory?: () => void;
+  isDarkMode?: boolean;
+  onToggleDarkMode?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -56,6 +62,8 @@ export const Header: React.FC<HeaderProps> = ({
   pageCount,
   historyCount = 0,
   onScrollToHistory,
+  isDarkMode = false,
+  onToggleDarkMode,
 }) => {
   const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false);
   const [isMuted, setIsMuted] = useState(() => isSoundMuted());
@@ -107,7 +115,7 @@ export const Header: React.FC<HeaderProps> = ({
       : null);
 
   return (
-    <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-amber-200/70 px-3 sm:px-6 py-2 shadow-2xs transition-all">
+    <header className="sticky top-0 z-30 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-b border-amber-200/70 dark:border-slate-800 px-3 sm:px-6 py-2 shadow-2xs transition-colors">
       <div className="max-w-7xl mx-auto flex items-center justify-between gap-2 sm:gap-3">
         {/* Brand Logo & Book Title */}
         <div className="flex items-center gap-2 sm:gap-3 min-w-0 shrink">
@@ -117,17 +125,17 @@ export const Header: React.FC<HeaderProps> = ({
           </div>
 
           {/* Divider between App Brand and Current Book */}
-          <div className="hidden md:block h-5 w-px bg-amber-200 shrink-0" />
+          <div className="hidden md:block h-5 w-px bg-amber-200 dark:bg-slate-700 shrink-0" />
 
           {/* Book Title & Page Count (Hidden on mobile to avoid crowding) */}
           <div className="hidden md:flex items-center gap-2 min-w-0">
             <h1
-              className="font-bold text-gray-900 text-xs sm:text-sm tracking-tight truncate max-w-[180px] lg:max-w-[280px]"
+              className="font-bold text-gray-900 dark:text-slate-100 text-xs sm:text-sm tracking-tight truncate max-w-[180px] lg:max-w-[280px]"
               title={displayTitle}
             >
               {displayTitle}
             </h1>
-            <span className="hidden lg:inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-amber-50 text-amber-800 border border-amber-200 shrink-0">
+            <span className="hidden lg:inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-amber-50 dark:bg-slate-800 text-amber-800 dark:text-amber-400 border border-amber-200 dark:border-slate-700 shrink-0">
               {pageCount} Pages + Cover
             </span>
           </div>
@@ -163,13 +171,13 @@ export const Header: React.FC<HeaderProps> = ({
               onClick={onOpenBrandModal}
               className={`hidden lg:flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors cursor-pointer relative ${
                 hasCustomBrand
-                  ? 'bg-amber-100/90 text-amber-950 border-amber-400 ring-1 ring-amber-300'
-                  : 'bg-white hover:bg-amber-50 text-gray-700 border-gray-200'
+                  ? 'bg-amber-100/90 dark:bg-amber-950/60 text-amber-950 dark:text-amber-200 border-amber-400 dark:border-amber-600 ring-1 ring-amber-300'
+                  : 'bg-white dark:bg-slate-800 hover:bg-amber-50 dark:hover:bg-slate-700 text-gray-700 dark:text-slate-200 border-gray-200 dark:border-slate-700'
               }`}
               id="header-brand-btn"
               title="Configure custom organization logo, sponsor, and website URL"
             >
-              <Building2 className={`w-3.5 h-3.5 ${hasCustomBrand ? 'text-amber-700' : 'text-gray-500'}`} />
+              <Building2 className={`w-3.5 h-3.5 ${hasCustomBrand ? 'text-amber-700 dark:text-amber-400' : 'text-gray-500 dark:text-slate-400'}`} />
               <span>Brand &amp; Logo</span>
               {hasCustomBrand && (
                 <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span>
@@ -181,11 +189,11 @@ export const Header: React.FC<HeaderProps> = ({
           {onOpenActivitiesModal && (
             <button
               onClick={onOpenActivitiesModal}
-              className="hidden lg:flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg bg-gradient-to-r from-amber-50 to-orange-50 hover:from-amber-100 hover:to-orange-100 text-orange-950 border border-orange-300/80 text-xs font-semibold transition-colors cursor-pointer"
+              className="hidden lg:flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg bg-gradient-to-r from-amber-50 to-orange-50 dark:from-slate-800 dark:to-orange-950/40 hover:from-amber-100 hover:to-orange-100 text-orange-950 dark:text-orange-200 border border-orange-300/80 dark:border-slate-700 text-xs font-semibold transition-colors cursor-pointer"
               id="header-activities-btn"
               title="Bonus Maze Adventure, Cut-Out Bookmarks, and Color Mixing Lab"
             >
-              <Compass className="w-3.5 h-3.5 text-orange-700" />
+              <Compass className="w-3.5 h-3.5 text-orange-700 dark:text-orange-400" />
               <span>Activities &amp; Crafts</span>
             </button>
           )}
@@ -194,11 +202,11 @@ export const Header: React.FC<HeaderProps> = ({
           {onOpenWebsiteModal && (
             <button
               onClick={onOpenWebsiteModal}
-              className="hidden md:flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg bg-blue-50/90 hover:bg-blue-100 text-blue-900 border border-blue-200 text-xs font-semibold transition-colors cursor-pointer"
+              className="hidden md:flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg bg-blue-50/90 dark:bg-slate-800 hover:bg-blue-100 dark:hover:bg-slate-700 text-blue-900 dark:text-blue-300 border border-blue-200 dark:border-slate-700 text-xs font-semibold transition-colors cursor-pointer"
               id="header-website-btn"
               title="Website embed widget, badges, and QR codes"
             >
-              <Globe className="w-3.5 h-3.5 text-blue-700" />
+              <Globe className="w-3.5 h-3.5 text-blue-700 dark:text-blue-400" />
               <span>Website &amp; Embed</span>
             </button>
           )}
@@ -207,14 +215,14 @@ export const Header: React.FC<HeaderProps> = ({
           {onScrollToHistory && (
             <button
               onClick={onScrollToHistory}
-              className="hidden sm:flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg bg-amber-50/90 hover:bg-amber-100 text-amber-900 border border-amber-200/90 text-xs font-semibold transition-colors cursor-pointer"
+              className="hidden sm:flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg bg-amber-50/90 dark:bg-slate-800 hover:bg-amber-100 dark:hover:bg-slate-700 text-amber-900 dark:text-amber-300 border border-amber-200/90 dark:border-slate-700 text-xs font-semibold transition-colors cursor-pointer"
               id="header-history-btn"
               title="View previously generated coloring books in this session"
             >
-              <History className="w-3.5 h-3.5 text-amber-700" />
+              <History className="w-3.5 h-3.5 text-amber-700 dark:text-amber-400" />
               <span>History</span>
               {historyCount > 0 && (
-                <span className="bg-amber-200 text-amber-900 text-[10px] font-bold px-1.5 py-0.2 rounded-full">
+                <span className="bg-amber-200 dark:bg-amber-800 text-amber-900 dark:text-amber-100 text-[10px] font-bold px-1.5 py-0.2 rounded-full">
                   {historyCount}
                 </span>
               )}
@@ -224,11 +232,11 @@ export const Header: React.FC<HeaderProps> = ({
           {/* AI Story Chat Assistant (Always visible) */}
           <button
             onClick={onOpenChat}
-            className="flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1.5 rounded-lg bg-indigo-50/80 hover:bg-indigo-100 text-indigo-700 border border-indigo-200/80 text-xs font-semibold transition-colors cursor-pointer"
+            className="flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1.5 rounded-lg bg-indigo-50/80 dark:bg-indigo-950/60 hover:bg-indigo-100 dark:hover:bg-indigo-900/80 text-indigo-700 dark:text-indigo-300 border border-indigo-200/80 dark:border-indigo-800 text-xs font-semibold transition-colors cursor-pointer"
             id="desktop-chat-btn"
             title="Open AI Story Assistant"
           >
-            <MessageSquare className="w-3.5 h-3.5 text-indigo-600" />
+            <MessageSquare className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
             <span className="hidden sm:inline">Story Chat</span>
           </button>
 
@@ -237,10 +245,10 @@ export const Header: React.FC<HeaderProps> = ({
             <button
               onClick={onOpenPrintPreview}
               title="Open full-screen Print Preview modal"
-              className="hidden xl:flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg bg-amber-50 hover:bg-amber-100 border border-amber-300 text-amber-900 text-xs font-semibold transition-colors cursor-pointer"
+              className="hidden xl:flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg bg-amber-50 dark:bg-slate-800 hover:bg-amber-100 dark:hover:bg-slate-700 border border-amber-300 dark:border-slate-700 text-amber-900 dark:text-amber-300 text-xs font-semibold transition-colors cursor-pointer"
               id="header-print-preview-btn"
             >
-              <Eye className="w-3.5 h-3.5 text-amber-700" />
+              <Eye className="w-3.5 h-3.5 text-amber-700 dark:text-amber-400" />
               <span>Print Preview</span>
             </button>
           )}
@@ -249,10 +257,10 @@ export const Header: React.FC<HeaderProps> = ({
           <button
             onClick={onDirectPrint}
             title="Print entire coloring book"
-            className="hidden sm:flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg bg-gray-50 hover:bg-gray-100 border border-gray-200 text-gray-700 text-xs font-medium transition-colors cursor-pointer"
+            className="hidden sm:flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg bg-gray-50 dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700 border border-gray-200 dark:border-slate-700 text-gray-700 dark:text-slate-200 text-xs font-medium transition-colors cursor-pointer"
             id="print-book-btn"
           >
-            <Printer className="w-3.5 h-3.5 text-gray-600" />
+            <Printer className="w-3.5 h-3.5 text-gray-600 dark:text-slate-400" />
             <span>Print</span>
           </button>
 
@@ -268,15 +276,15 @@ export const Header: React.FC<HeaderProps> = ({
             aria-label={isMuted ? 'Unmute sounds' : 'Mute sounds'}
             className={`flex items-center gap-1 sm:gap-1.5 px-2 sm:px-2.5 py-1.5 rounded-lg border text-xs font-medium transition-all cursor-pointer ${
               isMuted
-                ? 'bg-gray-100 text-gray-600 border-gray-300 hover:bg-gray-200'
-                : 'bg-amber-50/80 hover:bg-amber-100 text-amber-900 border-amber-200 hover:border-amber-300'
+                ? 'bg-gray-100 dark:bg-slate-800 text-gray-600 dark:text-slate-400 border-gray-300 dark:border-slate-700 hover:bg-gray-200 dark:hover:bg-slate-700'
+                : 'bg-amber-50/80 dark:bg-slate-800 hover:bg-amber-100 dark:hover:bg-slate-700 text-amber-900 dark:text-amber-300 border-amber-200 dark:border-slate-700 hover:border-amber-300'
             }`}
             id="header-quiet-mode-btn"
           >
             {isMuted ? (
-              <VolumeX className="w-3.5 h-3.5 text-gray-500" />
+              <VolumeX className="w-3.5 h-3.5 text-gray-500 dark:text-slate-400" />
             ) : (
-              <Volume2 className="w-3.5 h-3.5 text-amber-600" />
+              <Volume2 className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
             )}
             <span className="hidden xl:inline text-[11px] font-bold">
               {isMuted ? 'Quiet' : 'Sound'}
@@ -294,20 +302,58 @@ export const Header: React.FC<HeaderProps> = ({
             <span>{isGeneratingPdf ? '...' : 'PDF Book'}</span>
           </button>
 
-          {/* Mobile "More Tools" Menu Button (Visible on mobile/tablet screens < md) */}
-          <div className="relative md:hidden" ref={menuRef}>
+          {/* Export Code (.ZIP) Button - 100% visible across all screens */}
+          <a
+            href="/api/download-project"
+            download="coloring-book-studio-latest.zip"
+            onClick={() => playChimeSound('sparkle')}
+            className="flex items-center gap-1 sm:gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 active:scale-98 text-white text-xs font-bold shadow-xs transition-all cursor-pointer"
+            id="header-export-code-btn"
+            title="Download full project source code (.ZIP archive) with all latest changes"
+          >
+            <FolderDown className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Export Code (.ZIP)</span>
+            <span className="sm:hidden">ZIP</span>
+          </a>
+
+          {/* Global Dark Mode Toggle */}
+          {onToggleDarkMode && (
+            <button
+              type="button"
+              onClick={() => {
+                onToggleDarkMode();
+                playChimeSound('pop');
+              }}
+              title={isDarkMode ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+              aria-label="Toggle dark mode"
+              className="flex items-center justify-center p-1.5 sm:px-2.5 sm:py-1.5 rounded-lg border text-xs font-medium transition-all cursor-pointer bg-gray-50 dark:bg-slate-800 text-gray-700 dark:text-amber-300 border-gray-200 dark:border-slate-700 hover:bg-gray-100 dark:hover:bg-slate-700"
+              id="header-dark-mode-btn"
+            >
+              {isDarkMode ? (
+                <Sun className="w-4 h-4 text-amber-400" />
+              ) : (
+                <Moon className="w-4 h-4 text-slate-600 dark:text-slate-300" />
+              )}
+              <span className="hidden xl:inline ml-1 text-[11px] font-bold">
+                {isDarkMode ? 'Light' : 'Dark'}
+              </span>
+            </button>
+          )}
+
+          {/* "More Tools & Export" Menu Button */}
+          <div className="relative" ref={menuRef}>
             <button
               onClick={() => setIsMoreMenuOpen((prev) => !prev)}
               aria-label="More options"
               aria-expanded={isMoreMenuOpen}
               className={`flex items-center justify-center p-1.5 rounded-lg border text-xs font-semibold transition-colors cursor-pointer relative ${
                 isMoreMenuOpen
-                  ? 'bg-amber-100 text-amber-950 border-amber-400'
-                  : 'bg-white hover:bg-amber-50 text-gray-700 border-gray-200'
+                  ? 'bg-amber-100 dark:bg-slate-800 text-amber-950 dark:text-amber-300 border-amber-400 dark:border-amber-600'
+                  : 'bg-white dark:bg-slate-800 hover:bg-amber-50 dark:hover:bg-slate-700 text-gray-700 dark:text-slate-300 border-gray-200 dark:border-slate-700'
               }`}
-              title="More options and integrations"
+              title="More options, exports, and integrations"
             >
-              <MoreVertical className="w-4 h-4 text-gray-700" />
+              <MoreVertical className="w-4 h-4 text-gray-700 dark:text-slate-300" />
               {(hasCustomBrand || historyCount > 0) && (
                 <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-amber-500 ring-2 ring-white animate-pulse" />
               )}
@@ -315,12 +361,12 @@ export const Header: React.FC<HeaderProps> = ({
 
             {/* Dropdown Menu */}
             {isMoreMenuOpen && (
-              <div className="absolute right-0 top-full mt-2 w-64 bg-white rounded-xl shadow-xl border border-amber-200/90 py-1.5 z-50 divide-y divide-gray-100 transition-all animate-in fade-in slide-in-from-top-2 duration-150">
-                <div className="px-3 py-2 bg-amber-50/60">
-                  <div className="text-[11px] font-bold uppercase tracking-wider text-amber-800">
+              <div className="absolute right-0 top-full mt-2 w-72 bg-white dark:bg-slate-900 rounded-xl shadow-xl border border-amber-200/90 dark:border-slate-800 py-1.5 z-50 divide-y divide-gray-100 dark:divide-slate-800 transition-all animate-in fade-in slide-in-from-top-2 duration-150">
+                <div className="px-3 py-2 bg-amber-50/60 dark:bg-slate-800/80">
+                  <div className="text-[11px] font-bold uppercase tracking-wider text-amber-800 dark:text-amber-400">
                     Book Tools &amp; Sharing
                   </div>
-                  <div className="text-xs text-gray-600 truncate font-medium">
+                  <div className="text-xs text-gray-600 dark:text-slate-300 truncate font-medium">
                     {displayTitle}
                   </div>
                 </div>
@@ -499,26 +545,57 @@ export const Header: React.FC<HeaderProps> = ({
                     </button>
                   )}
 
+                  {/* Dark Mode Toggle in Menu */}
+                  {onToggleDarkMode && (
+                    <button
+                      onClick={() => {
+                        onToggleDarkMode();
+                        setIsMoreMenuOpen(false);
+                      }}
+                      className="w-full flex items-center justify-between px-3 py-2 text-left text-xs hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors group cursor-pointer border-t border-gray-100 dark:border-slate-800"
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div className="p-1.5 rounded-lg bg-amber-100 dark:bg-slate-800 text-amber-800 dark:text-amber-400">
+                          {isDarkMode ? <Sun className="w-3.5 h-3.5 text-amber-500" /> : <Moon className="w-3.5 h-3.5 text-slate-600" />}
+                        </div>
+                        <div className="min-w-0">
+                          <div className="font-semibold text-gray-900 dark:text-slate-100 flex items-center gap-1.5">
+                            <span>{isDarkMode ? 'Switch to Light Mode' : 'Switch to Dark Mode'}</span>
+                          </div>
+                          <div className="text-[11px] text-gray-500 dark:text-slate-400 truncate">
+                            {isDarkMode ? 'Gentle warm paper theme' : 'High-contrast dark studio theme'}
+                          </div>
+                        </div>
+                      </div>
+                      <span className="text-[10px] bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 px-2 py-0.5 rounded-full font-bold">
+                        {isDarkMode ? 'Dark' : 'Light'}
+                      </span>
+                    </button>
+                  )}
+
                   {/* Export Project Source Code (.ZIP) */}
                   <a
                     href="/api/download-project"
                     download="coloring-book-studio-latest.zip"
-                    onClick={() => setIsMoreMenuOpen(false)}
-                    className="w-full flex items-center justify-between px-3 py-2 text-left text-xs hover:bg-emerald-50 transition-colors group cursor-pointer border-t border-amber-100"
+                    onClick={() => {
+                      playChimeSound('sparkle');
+                      setIsMoreMenuOpen(false);
+                    }}
+                    className="w-full flex items-center justify-between px-3 py-2 text-left text-xs hover:bg-emerald-50 dark:hover:bg-emerald-950/40 transition-colors group cursor-pointer border-t border-amber-100 dark:border-slate-800"
                     title="Export complete codebase with latest changes"
                   >
                     <div className="flex items-center gap-2.5 min-w-0">
-                      <div className="p-1.5 rounded-lg bg-emerald-100 text-emerald-800">
-                        <Download className="w-3.5 h-3.5" />
+                      <div className="p-1.5 rounded-lg bg-emerald-100 dark:bg-emerald-900/60 text-emerald-800 dark:text-emerald-300">
+                        <FolderDown className="w-3.5 h-3.5" />
                       </div>
                       <div className="min-w-0">
-                        <div className="font-semibold text-gray-900 flex items-center gap-1.5">
+                        <div className="font-semibold text-gray-900 dark:text-slate-100 flex items-center gap-1.5">
                           <span>Download Project (.ZIP)</span>
-                          <span className="text-[10px] bg-emerald-100 text-emerald-800 px-1.5 py-0.2 rounded-full font-bold">
+                          <span className="text-[10px] bg-emerald-100 dark:bg-emerald-900/70 text-emerald-800 dark:text-emerald-300 px-1.5 py-0.2 rounded-full font-bold">
                             Source
                           </span>
                         </div>
-                        <div className="text-[11px] text-gray-500 truncate">Export full codebase for Claude / GitHub</div>
+                        <div className="text-[11px] text-gray-500 dark:text-slate-400 truncate">Export full codebase for Claude / GitHub</div>
                       </div>
                     </div>
                     <ChevronRight className="w-3.5 h-3.5 text-gray-400 group-hover:text-emerald-600 transition-transform group-hover:translate-x-0.5" />

@@ -86,6 +86,30 @@ export default function App() {
   const [isBookGenerationFinished, setIsBookGenerationFinished] = useState(true);
   const [isPdfBtnTooltipVisible, setIsPdfBtnTooltipVisible] = useState(false);
 
+  // Dark mode global theme state (persisted across sessions)
+  const [isDarkMode, setIsDarkMode] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      const stored = localStorage.getItem('colorcraft_dark_mode');
+      if (stored !== null) return stored === 'true';
+      return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+    }
+    return false;
+  });
+
+  useEffect(() => {
+    if (isDarkMode) {
+      document.documentElement.classList.add('dark');
+      localStorage.setItem('colorcraft_dark_mode', 'true');
+    } else {
+      document.documentElement.classList.remove('dark');
+      localStorage.setItem('colorcraft_dark_mode', 'false');
+    }
+  }, [isDarkMode]);
+
+  const handleToggleDarkMode = () => {
+    setIsDarkMode((prev) => !prev);
+  };
+
   // On initial page load: check if auto-saved session exists in persistent IndexedDB
   useEffect(() => {
     const checkSaved = () => {
@@ -1070,7 +1094,7 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-[#faf8f5] text-gray-900 flex flex-col selection:bg-amber-200">
+    <div className={`min-h-screen ${isDarkMode ? 'dark bg-slate-950 text-slate-100' : 'bg-[#faf8f5] text-gray-900'} flex flex-col selection:bg-amber-200 transition-colors duration-200`}>
       {/* Top Application Header */}
       <Header
         childName={book.childName}
@@ -1089,6 +1113,8 @@ export default function App() {
         pageCount={book.pages.length}
         historyCount={historyBooks.length}
         onScrollToHistory={handleScrollToHistory}
+        isDarkMode={isDarkMode}
+        onToggleDarkMode={handleToggleDarkMode}
       />
 
       {/* Main Content Area */}
