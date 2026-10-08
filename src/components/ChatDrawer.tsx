@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { ChatMessage, ChatModel, ChatRole } from '../types';
 import { CHAT_ROLES } from '../utils/sampleData';
+import { getClientSessionId } from '../utils/session';
 
 interface ChatDrawerProps {
   isOpen: boolean;
@@ -35,6 +36,7 @@ export const ChatDrawer: React.FC<ChatDrawerProps> = ({
   const [selectedModel, setSelectedModel] = useState<ChatModel>('gemini-3.5-flash');
   const [inputText, setInputText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [chatSessionId, setChatSessionId] = useState<string>(() => `chat_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`);
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       id: 'welcome-msg',
@@ -80,15 +82,16 @@ export const ChatDrawer: React.FC<ChatDrawerProps> = ({
     setIsLoading(true);
 
     try {
-      // Send conversation history to /api/chat
+      // Send user turn with server-managed conversation session to /api/chat
       const res = await fetch('/api/chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Session-ID': getClientSessionId(),
+        },
         body: JSON.stringify({
-          messages: newMessages.map((m) => ({
-            role: m.role,
-            content: m.content,
-          })),
+          chatSessionId,
+          message: textToSend.trim(),
           model: selectedModel,
           role: selectedRole.id,
           context: {
@@ -127,6 +130,9 @@ export const ChatDrawer: React.FC<ChatDrawerProps> = ({
   };
 
   const handleClearHistory = () => {
+    // Generate fresh session ID to discard server-side history
+    const freshSessionId = `chat_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+    setChatSessionId(freshSessionId);
     setMessages([
       {
         id: 'reset-msg',

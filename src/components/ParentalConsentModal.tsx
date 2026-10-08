@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { saveParentalConsentAsync } from '../utils/dbStorage';
 import { playChimeSound } from '../utils/kidAudio';
+import { getClientSessionId } from '../utils/session';
 
 export interface ParentalConsentModalProps {
   isOpen: boolean;
@@ -34,6 +35,7 @@ export const ParentalConsentModal: React.FC<ParentalConsentModalProps> = ({
   const [guardianType, setGuardianType] = useState<'parent' | 'guardian' | 'educator'>('parent');
   const [showFullTerms, setShowFullTerms] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   if (!isOpen) return null;
 
@@ -41,39 +43,51 @@ export const ParentalConsentModal: React.FC<ParentalConsentModalProps> = ({
     if (!isChecked || isSubmitting) return;
 
     setIsSubmitting(true);
+    setErrorMessage(null);
+
     try {
-      let serverToken: string | undefined;
-      try {
-        const res = await fetch('/api/verify-parental-consent', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            guardianRole: guardianType,
-            childName: childName?.trim() || undefined,
-            coppaConfirmed: true,
-          }),
-        });
-        const data = await res.json();
-        if (data.success && data.consentToken) {
-          serverToken = data.consentToken;
-        }
-      } catch (tokenErr) {
-        console.warn('Could not retrieve remote consent token:', tokenErr);
+      const sessionId = getClientSessionId();
+      const res = await fetch('/api/verify-parental-consent', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Session-ID': sessionId,
+        },
+        body: JSON.stringify({
+          guardianRole: guardianType,
+          childName: childName?.trim() || undefined,
+          sessionId,
+          coppaConfirmed: true,
+        }),
+      });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || `Parental verification rejected by server (Status ${res.status}).`);
       }
+
+      const data = await res.json();
+      if (!data.success || !data.consentToken) {
+        throw new Error(data.error || 'Server failed to issue cryptographic parental consent token.');
+      }
+
+      const serverToken = data.consentToken;
 
       await saveParentalConsentAsync({
         childName: childName?.trim() || undefined,
         guardianType,
         consentToken: serverToken,
       });
+
       playChimeSound('sparkle');
       onConsentGiven();
       onClose();
-    } catch (err) {
-      console.warn('Failed to save parental consent in IndexedDB:', err);
-      // Still proceed since user checked the box
-      onConsentGiven();
-      onClose();
+    } catch (err: any) {
+      console.error('Parental consent verification rejected:', err);
+      // STRICT COPPA SECURITY: Consent is NOT granted when verification fails
+      setErrorMessage(
+        err.message || 'Verification could not be confirmed with the server. Parental consent was not granted. Please try again.'
+      );
     } finally {
       setIsSubmitting(false);
     }
@@ -123,6 +137,17 @@ export const ParentalConsentModal: React.FC<ParentalConsentModalProps> = ({
 
         {/* Modal Body */}
         <div className="p-5 sm:p-6 space-y-4 max-h-[75vh] overflow-y-auto">
+          {errorMessage && (
+            <div className="bg-red-50 border-2 border-red-300 text-red-800 rounded-2xl p-4 text-xs flex items-start gap-3 animate-in fade-in">
+              <AlertCircle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
+              <div>
+                <p className="font-bold text-sm text-red-900 mb-0.5">Verification Failed</p>
+                <p>{errorMessage}</p>
+                <p className="mt-1 text-[11px] text-red-700">Consent cannot be granted until server verification succeeds.</p>
+              </div>
+            </div>
+          )}
+
           {/* Friendly introductory explanation */}
           <div className="bg-amber-50 border border-amber-200/90 rounded-2xl p-4 text-xs sm:text-sm text-amber-950 leading-relaxed">
             <p className="font-semibold text-amber-900 flex items-center gap-1.5 mb-1.5">

@@ -23,16 +23,17 @@ const PORT = 3000;
 app.disable('x-powered-by');
 
 // Security: Comprehensive HTTP Security Headers configured for AI Studio iFrame preview
+const isProduction = process.env.NODE_ENV === 'production';
+const contentSecurityPolicy = isProduction
+  ? "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; media-src 'self' data: blob:; connect-src 'self' https:; frame-ancestors 'self' https://*.google.com https://*.run.app;"
+  : "default-src 'self' https: data: blob: 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; media-src 'self' data: blob:; connect-src 'self' https:; frame-ancestors *;";
+
 app.use((_req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   // Allow camera & microphone requested in metadata.json for avatar photo capture and audio chimes
   res.setHeader('Permissions-Policy', 'camera=(self), microphone=(self), geolocation=()');
-  // Permissive frame-ancestors for AI Studio development environment and preview iframe embedding
-  res.setHeader(
-    'Content-Security-Policy',
-    "default-src 'self' https: data: blob: 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; media-src 'self' data: blob:; connect-src 'self' https:; frame-ancestors *;"
-  );
+  res.setHeader('Content-Security-Policy', contentSecurityPolicy);
   next();
 });
 
@@ -70,13 +71,21 @@ app.use((err: any, _req: express.Request, res: express.Response, next: express.N
 // -------------------------------------------------------------
 // CRYPTOGRAPHIC SERVER-SIDE PARENTAL CONSENT VERIFICATION
 // -------------------------------------------------------------
+if (isProduction && !process.env.CONSENT_SECRET) {
+  throw new Error('FATAL: CONSENT_SECRET environment variable is required in production.');
+}
 const CONSENT_SECRET = process.env.CONSENT_SECRET || crypto.randomBytes(32).toString('hex');
 
-function createConsentToken(data: { guardianRole: string; childName?: string }): { token: string; expiresAt: number } {
+function createConsentToken(data: {
+  guardianRole: string;
+  childName?: string;
+  sessionId?: string;
+}): { token: string; expiresAt: number } {
   const expiresAt = Date.now() + 4 * 60 * 60 * 1000; // 4 hours validity
   const payload = JSON.stringify({
     role: data.guardianRole,
-    childName: data.childName || '',
+    childName: (data.childName || '').trim().toLowerCase(),
+    sessionId: (data.sessionId || '').trim(),
     issuedAt: Date.now(),
     expiresAt,
   });
@@ -171,6 +180,122 @@ const consentRateLimiter = createRateLimiter({
   max: 30,
   message: 'Parental consent verification limit reached. Please wait a few minutes before submitting verification again.',
 });
+
+// -------------------------------------------------------------
+// ANONYMOUS SESSION & USER QUOTA SYSTEM (GEMINI ENDPOINTS)
+// -------------------------------------------------------------
+interface SessionQuotaConfig {
+  windowMinutes: number;
+  maxRequests: number;
+  endpointName: string;
+}
+
+const sessionQuotaStore = new Map<string, { count: number; resetAt: number }>();
+
+// Periodic garbage collection for expired session quota records
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, record] of sessionQuotaStore.entries()) {
+    if (record.resetAt <= now) {
+      sessionQuotaStore.delete(key);
+    }
+  }
+}, 5 * 60 * 1000);
+
+function createSessionQuotaMiddleware(config: SessionQuotaConfig): express.RequestHandler {
+  return (req, res, next) => {
+    const rawSession =
+      (req.headers['x-session-id'] as string) ||
+      (req.body && req.body.sessionId) ||
+      (req.query && (req.query.sessionId as string)) ||
+      req.ip ||
+      'unknown-session';
+    const cleanSession = sanitizeSafeString(rawSession, 120) || 'unknown-session';
+    const bucketKey = `${config.endpointName}:${cleanSession}`;
+    const now = Date.now();
+    const windowMs = config.windowMinutes * 60 * 1000;
+
+    let record = sessionQuotaStore.get(bucketKey);
+    if (!record || record.resetAt <= now) {
+      record = { count: 1, resetAt: now + windowMs };
+      sessionQuotaStore.set(bucketKey, record);
+    } else {
+      record.count += 1;
+    }
+
+    res.setHeader('X-Session-Quota-Limit', config.maxRequests.toString());
+    res.setHeader('X-Session-Quota-Remaining', Math.max(0, config.maxRequests - record.count).toString());
+    res.setHeader('X-Session-Quota-Reset', Math.ceil(record.resetAt / 1000).toString());
+
+    if (record.count > config.maxRequests) {
+      const waitSeconds = Math.ceil((record.resetAt - now) / 1000);
+      return res.status(429).json({
+        success: false,
+        error: `Anonymous session quota reached for ${config.endpointName}. Please wait ${waitSeconds}s before requesting again.`,
+      });
+    }
+
+    next();
+  };
+}
+
+// Session Quota limiters for all Gemini API endpoints
+const imageSessionQuota = createSessionQuotaMiddleware({
+  windowMinutes: 10,
+  maxRequests: 30,
+  endpointName: 'Image Generation',
+});
+
+const coverSessionQuota = createSessionQuotaMiddleware({
+  windowMinutes: 10,
+  maxRequests: 20,
+  endpointName: 'Cover Generation',
+});
+
+const planSessionQuota = createSessionQuotaMiddleware({
+  windowMinutes: 10,
+  maxRequests: 25,
+  endpointName: 'Book Planning',
+});
+
+const chatSessionQuota = createSessionQuotaMiddleware({
+  windowMinutes: 10,
+  maxRequests: 40,
+  endpointName: 'Chat Assistant',
+});
+
+const inspirationSessionQuota = createSessionQuotaMiddleware({
+  windowMinutes: 10,
+  maxRequests: 30,
+  endpointName: 'Theme Inspiration',
+});
+
+const photoToArtSessionQuota = createSessionQuotaMiddleware({
+  windowMinutes: 10,
+  maxRequests: 15,
+  endpointName: 'Photo-to-Art Conversion',
+});
+
+// -------------------------------------------------------------
+// SERVER-CONTROLLED CHAT CONVERSATION HISTORY STORE
+// -------------------------------------------------------------
+interface ServerChatTurn {
+  role: 'user' | 'model';
+  parts: [{ text: string }];
+  timestamp: number;
+}
+
+const serverChatHistories = new Map<string, ServerChatTurn[]>();
+
+// Periodic cleanup of idle chat sessions (idle > 1 hour)
+setInterval(() => {
+  const oneHourAgo = Date.now() - 60 * 60 * 1000;
+  for (const [id, history] of serverChatHistories.entries()) {
+    if (!history.length || history[history.length - 1].timestamp < oneHourAgo) {
+      serverChatHistories.delete(id);
+    }
+  }
+}, 10 * 60 * 1000);
 
 // Inappropriate words blocklist for children's application moderation
 const INAPPROPRIATE_WORDS = [
@@ -385,22 +510,24 @@ const PhotoToLineArtSchema = z
       'exploring a whimsical wonderland'
     ),
     parentConsentToken: z.string().optional(),
+    sessionId: z.string().trim().max(120).optional(),
   })
   .strip();
 
 const ChatSchema = z
   .object({
+    message: createSafeTextSchema({ fieldName: 'message content', min: 1, max: 600 }).optional(),
+    chatSessionId: z.string().trim().max(100).optional(),
+    // Client-supplied turns are strictly restricted to role: 'user' to prevent model turn injection
     messages: z
       .array(
         z.object({
-          role: z
-            .string()
-            .transform((r) => (r === 'assistant' || r === 'model' ? 'model' : 'user')),
+          role: z.literal('user'),
           content: createSafeTextSchema({ fieldName: 'message content', min: 1, max: 600, required: true }),
         })
       )
-      .min(1, 'At least one message is required')
-      .max(20, 'Conversation depth limited to 20 messages'),
+      .max(20)
+      .optional(),
     model: z
       .enum(['gemini-3.8-flash', 'gemini-3.1-pro-preview', 'gemini-3.1-flash-lite'])
       .default('gemini-3.8-flash'),
@@ -413,12 +540,16 @@ const ChatSchema = z
       .optional()
       .default({}),
   })
+  .refine((data) => Boolean(data.message || (data.messages && data.messages.length > 0)), {
+    message: 'Either message or user-role messages array is required.',
+  })
   .strip();
 
 const VerifyParentalConsentSchema = z
   .object({
     guardianRole: z.enum(['parent', 'guardian', 'educator']).default('parent'),
     childName: createSafeTextSchema({ fieldName: 'childName', min: 0, max: 50 }).optional().default(''),
+    sessionId: z.string().trim().max(120).optional(),
     coppaConfirmed: z.boolean().refine((val) => val === true, {
       message: 'COPPA confirmation is required to issue a parental consent verification token.',
     }),
@@ -478,7 +609,18 @@ app.get('/api/health', (_req, res) => {
 });
 
 // Project source export endpoint with rate limiting, caching, and clean filtering
-app.get('/api/download-project', downloadRateLimiter, (_req, res) => {
+// Protected or disabled in production to prevent arbitrary source code downloads
+app.get('/api/download-project', downloadRateLimiter, (req, res) => {
+  if (process.env.NODE_ENV === 'production') {
+    const adminKey = req.headers['x-admin-key'] || req.query.adminKey;
+    if (!process.env.ADMIN_KEY || adminKey !== process.env.ADMIN_KEY) {
+      return res.status(403).json({
+        success: false,
+        error: 'Project source archive download is disabled in production environments.',
+      });
+    }
+  }
+
   try {
     const zipPath = path.join('/tmp', 'project-source.zip');
     let shouldRegenerate = true;
@@ -729,11 +871,11 @@ CRITICAL RULES:
   }
 };
 
-app.post('/api/plan-book', planRateLimiter, handlePlanBook);
-app.post('/api/generate-plan', planRateLimiter, handlePlanBook);
+app.post('/api/plan-book', planRateLimiter, planSessionQuota, handlePlanBook);
+app.post('/api/generate-plan', planRateLimiter, planSessionQuota, handlePlanBook);
 
 // Endpoint: AI-powered creative trending theme inspiration based on child's name
-app.post('/api/inspire-themes', inspirationRateLimiter, async (req, res) => {
+app.post('/api/inspire-themes', inspirationRateLimiter, inspirationSessionQuota, async (req, res) => {
   try {
     const validationResult = validateWithZod(InspireThemesSchema, req.body);
     if (!validationResult.success) {
@@ -859,7 +1001,7 @@ Guidelines:
 });
 
 // Endpoint: Generate thick-line art image using gemini-3-pro-image-preview with safety guardrails
-app.post('/api/generate-image', imageRateLimiter, async (req, res) => {
+app.post('/api/generate-image', imageRateLimiter, imageSessionQuota, async (req, res) => {
   try {
     const parsed = validateWithZod(GenerateImageSchema, req.body);
     if (!parsed.success) {
@@ -985,7 +1127,7 @@ app.post('/api/generate-image', imageRateLimiter, async (req, res) => {
 });
 
 // Endpoint: Generate specialized thematic cover illustration accompanying child's name
-app.post('/api/generate-cover', imageRateLimiter, async (req, res) => {
+app.post('/api/generate-cover', imageRateLimiter, coverSessionQuota, async (req, res) => {
   try {
     const parsed = validateWithZod(GenerateCoverSchema, req.body);
     if (!parsed.success) {
@@ -1126,9 +1268,14 @@ app.post('/api/verify-parental-consent', consentRateLimiter, (req, res) => {
       });
     }
 
-    const { guardianRole, childName } = validationResult.data;
+    const { guardianRole, childName, sessionId } = validationResult.data;
     const cleanChildName = sanitizeSafeString(childName || '', 40);
-    const { token, expiresAt } = createConsentToken({ guardianRole, childName: cleanChildName });
+    const clientSessionId = (req.headers['x-session-id'] as string) || sessionId || '';
+    const { token, expiresAt } = createConsentToken({
+      guardianRole,
+      childName: cleanChildName,
+      sessionId: clientSessionId,
+    });
     return res.json({
       success: true,
       consentToken: token,
@@ -1141,7 +1288,7 @@ app.post('/api/verify-parental-consent', consentRateLimiter, (req, res) => {
 });
 
 // Endpoint: Convert child or pet photo into personalized coloring book line-art with strict size caps
-app.post('/api/photo-to-line-art', imageRateLimiter, async (req, res) => {
+app.post('/api/photo-to-line-art', imageRateLimiter, photoToArtSessionQuota, async (req, res) => {
   try {
     const parsed = validateWithZod(PhotoToLineArtSchema, req.body);
     if (!parsed.success) {
@@ -1167,11 +1314,34 @@ app.post('/api/photo-to-line-art', imageRateLimiter, async (req, res) => {
       childName: rawChildName,
       theme: rawTheme,
       sceneSetting: rawSceneSetting,
+      sessionId: reqBodySession,
     } = parsed.data;
 
     const childName = sanitizeSafeString(rawChildName, 40) || 'Hero';
     const theme = sanitizeSafeString(rawTheme, 60) || 'adventure';
     const sceneSetting = sanitizeSafeString(rawSceneSetting, 150) || 'exploring a whimsical wonderland';
+
+    // Verify cryptographic child name binding
+    const tokenChild = (consentCheck.payload?.childName || '').trim().toLowerCase();
+    const currentChild = childName.trim().toLowerCase();
+    if (tokenChild && currentChild && tokenChild !== currentChild && tokenChild !== 'hero') {
+      return res.status(403).json({
+        success: false,
+        error: `Parental consent token was issued for "${consentCheck.payload.childName}" and cannot be used for "${childName}".`,
+        isConsentRequired: true,
+      });
+    }
+
+    // Verify cryptographic browser session binding
+    const currentSession = (req.headers['x-session-id'] as string) || reqBodySession;
+    const tokenSession = consentCheck.payload?.sessionId;
+    if (tokenSession && currentSession && tokenSession !== currentSession) {
+      return res.status(403).json({
+        success: false,
+        error: 'Parental consent verification token was issued to a different session. Please confirm consent again.',
+        isConsentRequired: true,
+      });
+    }
 
     // Validate text inputs for safety
     const nameCheck = validateKidContentServer(childName);
@@ -1299,8 +1469,8 @@ Style directives:
   }
 });
 
-// Endpoint: Multi-turn Chat with Gemini with strict role restrictions and abuse prevention
-app.post('/api/chat', chatRateLimiter, async (req, res) => {
+// Endpoint: Multi-turn Chat with Gemini with server-controlled history and user turns only
+app.post('/api/chat', chatRateLimiter, chatSessionQuota, async (req, res) => {
   try {
     const parsed = validateWithZod(ChatSchema, req.body);
     if (!parsed.success) {
@@ -1308,11 +1478,39 @@ app.post('/api/chat', chatRateLimiter, async (req, res) => {
     }
 
     const {
+      message,
+      chatSessionId,
       messages,
       model = 'gemini-3.8-flash',
       role = 'companion',
       context = {},
     } = parsed.data;
+
+    // Identify session key for server-controlled conversation history
+    const sessionKey =
+      chatSessionId ||
+      (req.headers['x-session-id'] as string) ||
+      req.ip ||
+      'default-chat-session';
+
+    // Retrieve or initialize server-controlled conversation history
+    let serverHistory = serverChatHistories.get(sessionKey) || [];
+
+    // Extract the new user message (from message string or latest user message)
+    const rawUserTurn =
+      message ||
+      (messages && messages.length > 0 ? messages[messages.length - 1].content : '');
+
+    const cleanUserContent = sanitizeSafeString(rawUserTurn, 500);
+    if (!cleanUserContent) {
+      return res.status(400).json({ success: false, error: 'User message content is required.' });
+    }
+
+    // Server-side kid-safe validation
+    const kidCheck = validateKidContentServer(cleanUserContent);
+    if (!kidCheck.valid) {
+      return res.status(400).json({ success: false, error: kidCheck.reason });
+    }
 
     const safeTheme = sanitizeSafeString(context?.theme, 80);
     const safeChildName = sanitizeSafeString(context?.childName, 40);
@@ -1345,25 +1543,21 @@ STRICT DOMAIN BOUNDARIES:
       selectedModel = 'gemini-3.1-flash-lite';
     }
 
-    // Limit conversation depth (max 10 recent messages) and max text per message (max 500 chars)
-    const sanitizedMessages: { role: string; content: string }[] = [];
-    for (const m of messages.slice(-10)) {
-      const cleanContent = sanitizeSafeString(m.content || '', 500);
-      if (m.role === 'user') {
-        const check = validateKidContentServer(cleanContent);
-        if (!check.valid) {
-          return res.status(400).json({ success: false, error: check.reason });
-        }
-      }
-      sanitizedMessages.push({
-        role: m.role === 'user' ? 'user' : 'model',
-        content: cleanContent,
-      });
+    // Append ONLY the validated user turn to server-controlled history
+    serverHistory.push({
+      role: 'user',
+      parts: [{ text: cleanUserContent }],
+      timestamp: Date.now(),
+    });
+
+    // Bound conversation depth to last 10 turns (5 full user-model rounds)
+    if (serverHistory.length > 10) {
+      serverHistory = serverHistory.slice(-10);
     }
 
-    const contents = sanitizedMessages.map((m) => ({
+    const contents = serverHistory.map((m) => ({
       role: m.role,
-      parts: [{ text: m.content }],
+      parts: m.parts,
     }));
 
     const response = await ai.models.generateContent({
@@ -1375,9 +1569,20 @@ STRICT DOMAIN BOUNDARIES:
       },
     });
 
+    const replyText = response.text || '';
+
+    // Append genuine server-generated model response to server-controlled history
+    serverHistory.push({
+      role: 'model',
+      parts: [{ text: replyText }],
+      timestamp: Date.now(),
+    });
+
+    serverChatHistories.set(sessionKey, serverHistory);
+
     return res.json({
       success: true,
-      text: response.text || '',
+      text: replyText,
       modelUsed: selectedModel,
     });
   } catch (error: any) {

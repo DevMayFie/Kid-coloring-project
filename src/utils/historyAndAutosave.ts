@@ -7,7 +7,11 @@ import {
   addHistoryBookToDb,
   removeHistoryBookFromDb,
   clearHistoryInDb,
+  storageReady,
+  isStorageHydrated,
 } from './dbStorage';
+
+export { storageReady, isStorageHydrated };
 
 export interface AutosavedSession {
   book: ColoringBook;

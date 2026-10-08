@@ -19,6 +19,7 @@ import { resizeAndCompressImage } from '../utils/imageCompressor';
 import { sanitizeInput } from '../utils/security';
 import { ParentalConsentModal } from './ParentalConsentModal';
 import { getParentalConsentSync, getParentalConsentRecordAsync } from '../utils/dbStorage';
+import { getClientSessionId } from '../utils/session';
 
 interface PersonalizedHeroModalProps {
   isOpen: boolean;
@@ -111,16 +112,21 @@ export function PersonalizedHeroModal({
     playChimeSound('sparkle');
 
     try {
+      const sessionId = getClientSessionId();
       const consentRecord = await getParentalConsentRecordAsync();
       let token = consentRecord?.consentToken;
       if (!token) {
         try {
           const tokenRes = await fetch('/api/verify-parental-consent', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Session-ID': sessionId,
+            },
             body: JSON.stringify({
               guardianRole: consentRecord?.guardianType || 'parent',
               childName: cleanHeroName,
+              sessionId,
               coppaConfirmed: true,
             }),
           });
@@ -133,11 +139,16 @@ export function PersonalizedHeroModal({
         }
       }
 
+      if (!token) {
+        throw new Error('Valid parental consent verification token is required under COPPA.');
+      }
+
       const res = await fetch('/api/photo-to-line-art', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-parental-consent-token': token || '',
+          'X-Session-ID': sessionId,
+          'x-parental-consent-token': token,
         },
         body: JSON.stringify({
           photoBase64: photoPreview,
@@ -147,6 +158,7 @@ export function PersonalizedHeroModal({
           sceneSetting: `celebrating an epic ${theme} adventure with friendly companion characters`,
           difficulty: 'standard',
           parentConsentToken: token,
+          sessionId,
         }),
       });
 

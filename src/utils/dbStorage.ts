@@ -45,6 +45,13 @@ export function storageReady(): Promise<void> {
 }
 
 /**
+ * Returns true if IndexedDB has completed hydration into memory cache
+ */
+export function isStorageHydrated(): boolean {
+  return isInitialized;
+}
+
+/**
  * Initialize storage from IndexedDB on startup and migrate legacy localStorage if found.
  */
 export async function initStorage(): Promise<void> {

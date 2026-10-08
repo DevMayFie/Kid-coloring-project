@@ -188,10 +188,39 @@ export const BonusActivitiesModal: React.FC<BonusActivitiesModalProps> = ({
     }
   };
 
-  // 1-Click Direct Print for the current activity
+  // 1-Click Direct Print for the current activity (with canvas-to-PNG conversion for reliable printing)
   const handlePrintActivity = () => {
     const printContent = document.getElementById('printable-activity-sheet');
     if (!printContent) return;
+
+    // Clone element to prevent mutating live DOM
+    const clone = printContent.cloneNode(true) as HTMLElement;
+
+    // Convert any canvas elements (e.g. Maze adventure) to static PNG images
+    // because canvas elements lose pixel buffers when duplicated via innerHTML
+    const originalCanvases = printContent.querySelectorAll('canvas');
+    const clonedCanvases = clone.querySelectorAll('canvas');
+    originalCanvases.forEach((origCanvas, idx) => {
+      try {
+        const pngUrl = origCanvas.toDataURL('image/png');
+        const img = document.createElement('img');
+        img.src = pngUrl;
+        img.alt = 'Activity Graphic';
+        img.style.maxWidth = '100%';
+        img.style.height = 'auto';
+        img.style.display = 'block';
+        img.style.margin = '0 auto';
+        img.className = 'w-full h-full object-contain';
+        const targetCloned = clonedCanvases[idx];
+        if (targetCloned && targetCloned.parentNode) {
+          targetCloned.parentNode.replaceChild(img, targetCloned);
+        }
+      } catch (err) {
+        console.warn('Canvas to PNG conversion error during print preparation:', err);
+      }
+    });
+
+    const innerContent = clone.innerHTML;
 
     const htmlContent = `
       <!DOCTYPE html>
@@ -203,12 +232,12 @@ export const BonusActivitiesModal: React.FC<BonusActivitiesModalProps> = ({
             body { font-family: 'Fredoka', 'Segoe UI', Arial, sans-serif; text-align: center; color: #1e293b; margin: 0; padding: 10px; }
             h1 { font-size: 24px; margin-bottom: 4px; color: #d97706; }
             p { font-size: 13px; color: #4b5563; margin-top: 0; }
-            .canvas-container img { max-width: 90%; height: auto; border: 2px solid #000; border-radius: 8px; }
+            img { max-width: 90%; height: auto; border: 2px solid #000; border-radius: 8px; }
             .instructions { margin-top: 15px; font-size: 12px; font-weight: bold; color: #64748b; }
           </style>
         </head>
         <body>
-          ${printContent.innerHTML}
+          ${innerContent}
           <script>
             window.onload = () => {
               window.print();

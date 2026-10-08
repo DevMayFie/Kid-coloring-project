@@ -32,6 +32,7 @@ import { playChimeSound } from '../utils/kidAudio';
 import { validateKidContent, sanitizeInput } from '../utils/security';
 import { ParentalConsentModal } from './ParentalConsentModal';
 import { getParentalConsentSync } from '../utils/dbStorage';
+import { getClientSessionId } from '../utils/session';
 
 export interface InspirationTheme {
   theme: string;
@@ -136,7 +137,10 @@ export const BookForm: React.FC<BookFormProps> = ({
     try {
       const response = await fetch('/api/inspire-themes', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Session-ID': getClientSessionId(),
+        },
         body: JSON.stringify({
           childName: childName.trim(),
         }),

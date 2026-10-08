@@ -35,6 +35,7 @@ import { generateColoringBookPdf } from './utils/pdfGenerator';
 import { playChimeSound } from './utils/kidAudio';
 import { escapeHtml } from './utils/security';
 import { storageReady } from './utils/dbStorage';
+import { getClientSessionId } from './utils/session';
 import {
   saveBookToLocalStorage,
   getAutosavedSession,
@@ -63,6 +64,7 @@ export default function App() {
   });
   const [autosavedSession, setAutosavedSession] = useState<AutosavedSession | null>(null);
   const [showRestoreBanner, setShowRestoreBanner] = useState(false);
+  const [isStorageHydrated, setIsStorageHydrated] = useState(false);
 
   // Modals & Drawers
   const [isChatOpen, setIsChatOpen] = useState(false);
@@ -111,8 +113,10 @@ export default function App() {
     setIsDarkMode((prev) => !prev);
   };
 
-  // On initial page load: check if auto-saved session exists in persistent IndexedDB
+  // On initial page load: wait for persistent IndexedDB hydration before any read/write
   useEffect(() => {
+    let isMounted = true;
+
     const checkSaved = () => {
       const saved = getAutosavedSession();
       if (saved && saved.book && Array.isArray(saved.book.pages) && saved.book.pages.length > 0) {
@@ -123,8 +127,24 @@ export default function App() {
       if (history.length > 0) {
         setHistoryBooks(history);
       }
+      if (isMounted) {
+        setIsStorageHydrated(true);
+      }
     };
-    checkSaved();
+
+    // Guarantee that storageReady has completed before marking hydrated
+    storageReady()
+      .then(() => {
+        if (isMounted) {
+          checkSaved();
+        }
+      })
+      .catch((err) => {
+        console.warn('Storage initialization warning:', err);
+        if (isMounted) {
+          setIsStorageHydrated(true);
+        }
+      });
 
     const handleHistoryUpdate = (e: any) => {
       if (e.detail && Array.isArray(e.detail) && e.detail.length > 0) {
@@ -136,14 +156,17 @@ export default function App() {
     window.addEventListener('coloring_book_autosave_updated', checkSaved);
     window.addEventListener('coloring_book_session_history_updated', handleHistoryUpdate);
     return () => {
+      isMounted = false;
       window.removeEventListener('coloring_book_storage_ready', checkSaved);
       window.removeEventListener('coloring_book_autosave_updated', checkSaved);
       window.removeEventListener('coloring_book_session_history_updated', handleHistoryUpdate);
     };
   }, []);
 
-  // Automatically save current book state to persistent IndexedDB whenever a change is made
+  // Automatically save current book state to persistent IndexedDB whenever a change is made.
+  // Guarded by isStorageHydrated so no write occurs before hydration completes!
   useEffect(() => {
+    if (!isStorageHydrated) return;
     if (book && book.id) {
       saveBookToLocalStorage(book);
       // Keep autosaved session in sync
@@ -152,7 +175,7 @@ export default function App() {
         savedAt: Date.now(),
       });
     }
-  }, [book]);
+  }, [book, isStorageHydrated]);
 
   // Global shortcut: Listen for Ctrl+S or Cmd+S to trigger the export PDF button click handler
   useEffect(() => {
@@ -207,7 +230,10 @@ export default function App() {
       try {
         const planRes = await fetch('/api/plan-book', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Session-ID': getClientSessionId(),
+          },
           body: JSON.stringify({
             theme: options.theme,
             childName: options.childName,
@@ -381,7 +407,10 @@ export default function App() {
       try {
         const coverRes = await fetch('/api/generate-cover', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Session-ID': getClientSessionId(),
+          },
           body: JSON.stringify({
             theme: options.theme,
             childName: options.childName,
@@ -422,7 +451,10 @@ export default function App() {
         try {
           const imgRes = await fetch('/api/generate-image', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Session-ID': getClientSessionId(),
+            },
             body: JSON.stringify({
               prompt: newPages[i].prompt,
               imageSize: options.resolution,
@@ -498,7 +530,10 @@ export default function App() {
     try {
       const res = await fetch('/api/generate-image', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Session-ID': getClientSessionId(),
+        },
         body: JSON.stringify({
           prompt: customPrompt || pageToRegen.prompt,
           imageSize: resolution || pageToRegen.resolution || book.resolution,
@@ -558,7 +593,10 @@ export default function App() {
 
       const res = await fetch('/api/generate-cover', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Session-ID': getClientSessionId(),
+        },
         body: JSON.stringify({
           theme: book.theme,
           childName: book.childName,
@@ -817,7 +855,10 @@ export default function App() {
         try {
           const planRes = await fetch('/api/plan-book', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Session-ID': getClientSessionId(),
+            },
             body: JSON.stringify({
               theme: targetTheme,
               childName: book.childName,
@@ -878,7 +919,10 @@ export default function App() {
         try {
           const res = await fetch('/api/generate-image', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Session-ID': getClientSessionId(),
+            },
             body: JSON.stringify({
               prompt,
               imageSize: page.resolution || book.resolution,
@@ -941,7 +985,10 @@ export default function App() {
     try {
       const res = await fetch('/api/generate-image', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Session-ID': getClientSessionId(),
+        },
         body: JSON.stringify({
           prompt: `Printable cut-out sticker sheet for children's coloring book, theme "${book.theme}", 6 distinct cute vector outline sticker illustrations with dashed border cut lines around each sticker, scissors cut icons, star badges, trophies, theme icons, pure white background, thick black outlines, no color, perfect for cutting out and sticking onto coloring book pages`,
           imageSize: book.resolution,
