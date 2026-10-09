@@ -332,6 +332,7 @@ export const DEFAULT_COLORING_BOOK: ColoringBook = {
   theme: 'Space Dinosaurs',
   childName: 'Leo',
   difficulty: 'standard',
+  artStyle: 'classic',
   title: "Leo's Space Dinosaur Adventure",
   subtitle: 'A Galactic Coloring Mission Across the Stars',
   dedication: 'Specially created for Leo • Grab your crayons and explore!',
@@ -483,7 +484,7 @@ export const CHAT_ROLES: ChatRole[] = [
     description: 'General brainstorming, theme ideas, and cheerful advice.',
     systemInstruction:
       'You are a friendly, imaginative children coloring book assistant. Help parents and kids brainstorm fun themes and 5-page coloring storylines.',
-    recommendedModel: 'gemini-3.5-flash',
+    recommendedModel: 'gemini-3.8-flash',
   },
   {
     id: 'complex_storyteller',

@@ -1,5 +1,5 @@
-import React, { useEffect, useState, useRef } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
+import React, { useEffect, useState, useRef, useMemo } from 'react';
+import { motion, AnimatePresence, type Variants } from 'motion/react';
 import {
   ChevronLeft,
   ChevronRight,
@@ -25,6 +25,7 @@ import { playChimeSound } from '../utils/kidAudio';
 import { PageColorTesterCanvas } from './PageColorTesterCanvas';
 import { PageBorderRenderer } from './PageBorderRenderer';
 import { VoiceRecorderWidget } from './VoiceRecorderWidget';
+import { getArtStyleDefinition } from '../utils/artStyles';
 
 export interface FlipBookSlide {
   id: string;
@@ -80,7 +81,7 @@ export interface FlipBookReaderProps {
 }
 
 // Subtle, realistic 3D paper page-flip transition variants
-const pageFlipVariants = {
+const pageFlipVariants: Variants = {
   enter: (direction: number) => ({
     x: direction > 0 ? 32 : -32,
     rotateY: direction > 0 ? 15 : -15,
@@ -103,10 +104,10 @@ const pageFlipVariants = {
     boxShadow: '0 10px 28px -6px rgba(0,0,0,0.10)',
     transition: {
       x: { type: 'spring', stiffness: 320, damping: 30, mass: 0.8 },
-      rotateY: { duration: 0.35, ease: [0.22, 1, 0.36, 1] },
-      skewY: { duration: 0.35, ease: [0.22, 1, 0.36, 1] },
+      rotateY: { duration: 0.35, ease: 'easeOut' },
+      skewY: { duration: 0.35, ease: 'easeOut' },
       opacity: { duration: 0.22 },
-      scale: { duration: 0.3, ease: [0.22, 1, 0.36, 1] },
+      scale: { duration: 0.3, ease: 'easeOut' },
     },
   },
   exit: (direction: number) => ({
@@ -122,8 +123,8 @@ const pageFlipVariants = {
         : '-14px 10px 24px -6px rgba(0,0,0,0.12), inset 8px 0 16px -8px rgba(0,0,0,0.05)',
     transition: {
       x: { type: 'spring', stiffness: 320, damping: 30, mass: 0.8 },
-      rotateY: { duration: 0.3, ease: [0.22, 1, 0.36, 1] },
-      skewY: { duration: 0.3, ease: [0.22, 1, 0.36, 1] },
+      rotateY: { duration: 0.3, ease: 'easeOut' },
+      skewY: { duration: 0.3, ease: 'easeOut' },
       opacity: { duration: 0.18 },
       scale: { duration: 0.26 },
     },
@@ -161,65 +162,79 @@ export const FlipBookReader: React.FC<FlipBookReaderProps> = ({
   const [isRegeneratingStickers, setIsRegeneratingStickers] = useState(false);
 
   // Compile sequential book slides (Cover -> Story Pages -> Bonus Stickers)
-  const slides: FlipBookSlide[] = [];
+  const slides = useMemo<FlipBookSlide[]>(() => {
+    const list: FlipBookSlide[] = [];
 
-  if (book.coverImageUrl || book.coverStatus) {
-    slides.push({
-      id: 'slide-cover',
-      type: 'cover',
-      title: `${book.childName}'s Custom Cover`,
-      navLabel: 'Cover',
-      badge: '★ Book Cover ★',
-      imageUrl: book.coverImageUrl,
-      status: book.coverStatus,
-      subtitle: book.subtitle,
-      dedication: book.dedication,
-      storyCaption: book.subtitle,
-      funFactOrTip: book.dedication,
+    if (book.coverImageUrl || book.coverStatus) {
+      list.push({
+        id: 'slide-cover',
+        type: 'cover',
+        title: `${book.childName}'s Custom Cover`,
+        navLabel: 'Cover',
+        badge: '★ Book Cover ★',
+        imageUrl: book.coverImageUrl,
+        status: book.coverStatus,
+        subtitle: book.subtitle,
+        dedication: book.dedication,
+        storyCaption: book.subtitle,
+        funFactOrTip: book.dedication,
+      });
+    }
+
+    book.pages.forEach((p) => {
+      const pageMode = p.activityMode || book.activityMode;
+      const modeBadge =
+        pageMode === 'color-by-numbers'
+          ? '🔢 Color by Numbers'
+          : pageMode === 'dot-to-dot'
+          ? '✏️ Connect the Dots'
+          : `PAGE ${p.pageNumber} OF ${book.pages.length}`;
+
+      list.push({
+        id: `slide-${p.id}`,
+        type: 'page',
+        title: p.title,
+        navLabel: `Page ${p.pageNumber}`,
+        badge: modeBadge,
+        pageNumber: p.pageNumber,
+        imageUrl: p.coloredImageUrl || p.imageUrl,
+        status: p.status,
+        storyCaption: p.storyCaption,
+        secondaryCaption: p.secondaryCaption,
+        secondaryLanguage: p.secondaryLanguage || book.secondaryLanguage,
+        numberLegend: p.numberLegend,
+        activityMode: pageMode,
+        funFactOrTip: p.funFactOrTip,
+        rawPage: p,
+      });
     });
-  }
 
-  book.pages.forEach((p) => {
-    const pageMode = p.activityMode || book.activityMode;
-    const modeBadge =
-      pageMode === 'color-by-numbers'
-        ? '🔢 Color by Numbers'
-        : pageMode === 'dot-to-dot'
-        ? '✏️ Connect the Dots'
-        : `PAGE ${p.pageNumber} OF ${book.pages.length}`;
+    if (book.stickerSheet?.imageUrl || book.stickerSheet?.status) {
+      list.push({
+        id: 'slide-stickers',
+        type: 'stickers',
+        title: book.stickerSheet?.title || `${book.childName}'s Printable Stickers`,
+        navLabel: 'Stickers',
+        badge: '✂️ Bonus Stickers',
+        imageUrl: book.stickerSheet?.imageUrl,
+        status: book.stickerSheet?.status,
+        storyCaption: 'Cut along dashed lines with safety scissors and stick onto your colored pages!',
+        funFactOrTip: 'Use bold bright colors for your stickers so they pop out on your pages!',
+      });
+    }
 
-    slides.push({
-      id: `slide-${p.id}`,
-      type: 'page',
-      title: p.title,
-      navLabel: `Page ${p.pageNumber}`,
-      badge: modeBadge,
-      pageNumber: p.pageNumber,
-      imageUrl: p.coloredImageUrl || p.imageUrl,
-      status: p.status,
-      storyCaption: p.storyCaption,
-      secondaryCaption: p.secondaryCaption,
-      secondaryLanguage: p.secondaryLanguage || book.secondaryLanguage,
-      numberLegend: p.numberLegend,
-      activityMode: pageMode,
-      funFactOrTip: p.funFactOrTip,
-      rawPage: p,
-    });
-  });
-
-  if (book.stickerSheet?.imageUrl || book.stickerSheet?.status) {
-    slides.push({
-      id: 'slide-stickers',
-      type: 'stickers',
-      title: book.stickerSheet?.title || `${book.childName}'s Printable Stickers`,
-      navLabel: 'Stickers',
-      badge: '✂️ Bonus Stickers',
-      imageUrl: book.stickerSheet?.imageUrl,
-      status: book.stickerSheet?.status,
-      storyCaption: 'Cut along dashed lines with safety scissors and stick onto your colored pages!',
-      funFactOrTip: 'Use bold bright colors for your stickers so they pop out on your pages!',
-    });
-  }
+    return list;
+  }, [
+    book.coverImageUrl,
+    book.coverStatus,
+    book.childName,
+    book.subtitle,
+    book.dedication,
+    book.pages,
+    book.activityMode,
+    book.secondaryLanguage,
+    book.stickerSheet,
+  ]);
 
   const safeIndex = Math.max(0, Math.min(activePageIndex, slides.length - 1));
   const currentSlide = slides[safeIndex] || slides[0];
@@ -275,8 +290,10 @@ export const FlipBookReader: React.FC<FlipBookReaderProps> = ({
   const checkStripScroll = () => {
     const el = filmStripScrollRef.current;
     if (!el) return;
-    setCanScrollStripLeft(el.scrollLeft > 6);
-    setCanScrollStripRight(el.scrollLeft + el.clientWidth < el.scrollWidth - 6);
+    const canLeft = el.scrollLeft > 6;
+    const canRight = el.scrollLeft + el.clientWidth < el.scrollWidth - 6;
+    setCanScrollStripLeft((prev) => (prev !== canLeft ? canLeft : prev));
+    setCanScrollStripRight((prev) => (prev !== canRight ? canRight : prev));
   };
 
   useEffect(() => {
@@ -465,8 +482,16 @@ export const FlipBookReader: React.FC<FlipBookReaderProps> = ({
 
                 {/* Cover Details & Actions */}
                 <div className="flex-1 text-left space-y-3.5">
-                  <div className="inline-block px-3 py-1 rounded-full bg-amber-600 text-white text-xs font-black uppercase tracking-wider shadow-2xs">
-                    ★ Book Cover ★
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <div className="inline-block px-3 py-1 rounded-full bg-amber-600 text-white text-xs font-black uppercase tracking-wider shadow-2xs">
+                      ★ Book Cover ★
+                    </div>
+                    {book.artStyle && (
+                      <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-100 text-amber-900 text-xs font-bold border border-amber-300 shadow-2xs">
+                        <span>{getArtStyleDefinition(book.artStyle).emoji}</span>
+                        <span>{getArtStyleDefinition(book.artStyle).name} Style</span>
+                      </div>
+                    )}
                   </div>
 
                   <h2 className="text-2xl sm:text-3xl font-black text-gray-900 uppercase tracking-tight" style={{ fontFamily: "'Fredoka', sans-serif" }}>
@@ -678,8 +703,8 @@ export const FlipBookReader: React.FC<FlipBookReaderProps> = ({
                               <AlertCircle className="w-7 h-7" />
                             </div>
                             <p className="text-sm font-bold text-gray-900">Drawing Incomplete</p>
-                            <p className="text-xs text-gray-600 leading-relaxed">
-                              {page.errorMessage || 'Could not generate this page image.'}
+                            <p className="text-xs text-rose-900 bg-rose-50/90 border border-rose-200/90 rounded-xl px-3.5 py-2 leading-relaxed font-medium shadow-2xs max-w-[280px]">
+                              {page.errorMessage || 'Could not generate this page image. Please try again.'}
                             </p>
                             <button
                               type="button"

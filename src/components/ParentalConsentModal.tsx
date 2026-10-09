@@ -47,6 +47,7 @@ export const ParentalConsentModal: React.FC<ParentalConsentModalProps> = ({
 
     try {
       const sessionId = getClientSessionId();
+      const activeChildName = childName?.trim() || 'Hero';
       const res = await fetch('/api/verify-parental-consent', {
         method: 'POST',
         headers: {
@@ -55,7 +56,7 @@ export const ParentalConsentModal: React.FC<ParentalConsentModalProps> = ({
         },
         body: JSON.stringify({
           guardianRole: guardianType,
-          childName: childName?.trim() || undefined,
+          childName: activeChildName,
           sessionId,
           coppaConfirmed: true,
         }),
@@ -74,7 +75,7 @@ export const ParentalConsentModal: React.FC<ParentalConsentModalProps> = ({
       const serverToken = data.consentToken;
 
       await saveParentalConsentAsync({
-        childName: childName?.trim() || undefined,
+        childName: activeChildName,
         guardianType,
         consentToken: serverToken,
       });

@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
-import { X, RefreshCw, Sparkles, Wand2, ArrowRight } from 'lucide-react';
+import { X, RefreshCw, Sparkles, Wand2, ArrowRight, Palette, Check } from 'lucide-react';
 import { playChimeSound } from '../utils/kidAudio';
+import { ArtStyle } from '../types';
+import { ART_STYLES, getArtStyleDefinition } from '../utils/artStyles';
 
 interface BatchRegenerateModalProps {
   isOpen: boolean;
@@ -8,6 +10,7 @@ interface BatchRegenerateModalProps {
   currentTheme: string;
   childName: string;
   pageCount: number;
+  currentArtStyle?: ArtStyle;
   isBatchGenerating: boolean;
   batchProgress: {
     current: number;
@@ -15,7 +18,7 @@ interface BatchRegenerateModalProps {
     pageTitle: string;
     percent: number;
   } | null;
-  onBatchRegenerate: (newTheme?: string, refreshPlan?: boolean) => Promise<void>;
+  onBatchRegenerate: (newTheme?: string, refreshPlan?: boolean, newArtStyle?: ArtStyle) => Promise<void>;
 }
 
 export const BatchRegenerateModal: React.FC<BatchRegenerateModalProps> = ({
@@ -24,11 +27,13 @@ export const BatchRegenerateModal: React.FC<BatchRegenerateModalProps> = ({
   currentTheme,
   childName,
   pageCount,
+  currentArtStyle = 'classic',
   isBatchGenerating,
   batchProgress,
   onBatchRegenerate,
 }) => {
   const [themeInput, setThemeInput] = useState(currentTheme);
+  const [selectedArtStyle, setSelectedArtStyle] = useState<ArtStyle>(currentArtStyle);
   const [refreshPlan, setRefreshPlan] = useState(true);
 
   if (!isOpen) return null;
@@ -37,7 +42,7 @@ export const BatchRegenerateModal: React.FC<BatchRegenerateModalProps> = ({
     playChimeSound('magic');
     const trimmed = themeInput.trim();
     const targetTheme = trimmed.length > 0 ? trimmed : currentTheme;
-    await onBatchRegenerate(targetTheme, refreshPlan);
+    await onBatchRegenerate(targetTheme, refreshPlan, selectedArtStyle);
   };
 
   const QUICK_THEME_REFRESH_IDEAS = [
@@ -165,6 +170,51 @@ export const BatchRegenerateModal: React.FC<BatchRegenerateModalProps> = ({
                       </button>
                     ))}
                   </div>
+                </div>
+              </div>
+
+              {/* Art Style Selector */}
+              <div className="bg-white rounded-2xl p-4 border border-gray-200 shadow-xs space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-black text-gray-700 uppercase tracking-wide flex items-center gap-1.5">
+                    <Palette className="w-3.5 h-3.5 text-amber-600" />
+                    Artistic Line Style:
+                  </span>
+                  <span className="text-[10px] bg-amber-100 text-amber-900 font-bold px-2 py-0.5 rounded-md border border-amber-300">
+                    Active: {getArtStyleDefinition(selectedArtStyle).name}
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  {ART_STYLES.map((style) => {
+                    const isSelected = selectedArtStyle === style.id;
+                    return (
+                      <button
+                        key={style.id}
+                        type="button"
+                        onClick={() => setSelectedArtStyle(style.id)}
+                        className={`p-2 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
+                          isSelected
+                            ? 'border-amber-600 bg-amber-50 ring-2 ring-amber-500/20'
+                            : 'border-gray-200 hover:border-amber-300 bg-white hover:bg-gray-50'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-base select-none">{style.emoji}</span>
+                          {isSelected && (
+                            <span className="w-3.5 h-3.5 rounded-full bg-amber-600 text-white flex items-center justify-center">
+                              <Check className="w-2 h-2" />
+                            </span>
+                          )}
+                        </div>
+                        <div className="font-bold text-[11px] text-gray-900 leading-tight">
+                          {style.name}
+                        </div>
+                        <div className="text-[9px] text-gray-500 truncate mt-0.5">
+                          {style.tagline}
+                        </div>
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
 

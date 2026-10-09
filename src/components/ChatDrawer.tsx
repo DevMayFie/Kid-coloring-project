@@ -33,17 +33,19 @@ export const ChatDrawer: React.FC<ChatDrawerProps> = ({
   onApplyTheme,
 }) => {
   const [selectedRole, setSelectedRole] = useState<ChatRole>(CHAT_ROLES[0]);
-  const [selectedModel, setSelectedModel] = useState<ChatModel>('gemini-3.5-flash');
+  const [selectedModel, setSelectedModel] = useState<ChatModel>('gemini-3.8-flash');
   const [inputText, setInputText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [chatSessionId, setChatSessionId] = useState<string>(() => `chat_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`);
+  const [chatSessionId, setChatSessionId] = useState<string>(
+    () => `chat_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`
+  );
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       id: 'welcome-msg',
       role: 'model',
       content: `Hello! I'm your **ColorCraft Assistant**! 🎨\n\nI can help you create amazing coloring books for **${currentChildName || 'your child'}**. Ask me to:\n• Brainstorm fun themes or magical ideas\n• Outline 5 distinct scenes with rhyming captions\n• Suggest ideas tailored to your child's age or hobbies\n\nWhat would you like to explore?`,
       timestamp: Date.now(),
-      modelUsed: 'gemini-3.5-flash',
+      modelUsed: 'gemini-3.8-flash',
     },
   ]);
 
@@ -90,6 +92,7 @@ export const ChatDrawer: React.FC<ChatDrawerProps> = ({
           'X-Session-ID': getClientSessionId(),
         },
         body: JSON.stringify({
+          sessionId: getClientSessionId(),
           chatSessionId,
           message: textToSend.trim(),
           model: selectedModel,
@@ -130,8 +133,25 @@ export const ChatDrawer: React.FC<ChatDrawerProps> = ({
   };
 
   const handleClearHistory = () => {
+    const oldSessionId = chatSessionId;
+    if (oldSessionId) {
+      fetch('/api/chat/clear', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Session-ID': getClientSessionId(),
+        },
+        body: JSON.stringify({
+          chatSessionId: oldSessionId,
+          sessionId: getClientSessionId(),
+        }),
+      }).catch(() => {
+        // Ignore background cleanup error
+      });
+    }
+
     // Generate fresh session ID to discard server-side history
-    const freshSessionId = `chat_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+    const freshSessionId = `chat_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     setChatSessionId(freshSessionId);
     setMessages([
       {
@@ -216,7 +236,7 @@ export const ChatDrawer: React.FC<ChatDrawerProps> = ({
             <div className="flex items-center gap-1">
               {[
                 { id: 'gemini-3.1-flash-lite', label: 'Flash-Lite (Fast)' },
-                { id: 'gemini-3.5-flash', label: 'Flash 3.5 (General)' },
+                { id: 'gemini-3.8-flash', label: 'Flash 3.8 (General)' },
                 { id: 'gemini-3.1-pro-preview', label: 'Pro 3.1 (Complex)' },
               ].map((m) => (
                 <button

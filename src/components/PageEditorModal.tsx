@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { X, RefreshCw, Check, Sparkles, Sliders } from 'lucide-react';
-import { ColoringPage, ImageResolution } from '../types';
+import { X, RefreshCw, Check, Sparkles, Sliders, Palette } from 'lucide-react';
+import { ColoringPage, ImageResolution, ArtStyle } from '../types';
+import { ART_STYLES, getArtStyleDefinition } from '../utils/artStyles';
 
 interface PageEditorModalProps {
   page: ColoringPage | null;
@@ -10,6 +11,7 @@ interface PageEditorModalProps {
     storyCaption: string;
     prompt: string;
     resolution: ImageResolution;
+    artStyle?: ArtStyle;
     funFactOrTip?: string;
   }) => Promise<void>;
   isRegenerating: boolean;
@@ -26,6 +28,7 @@ export const PageEditorModal: React.FC<PageEditorModalProps> = ({
   const [funFactOrTip, setFunFactOrTip] = useState(page?.funFactOrTip || '');
   const [prompt, setPrompt] = useState(page?.prompt || '');
   const [resolution, setResolution] = useState<ImageResolution>(page?.resolution || '2K');
+  const [artStyle, setArtStyle] = useState<ArtStyle>(page?.artStyle || 'classic');
 
   // Synchronize fields when active page changes
   useEffect(() => {
@@ -35,10 +38,22 @@ export const PageEditorModal: React.FC<PageEditorModalProps> = ({
       setFunFactOrTip(page.funFactOrTip || '');
       setPrompt(page.prompt);
       setResolution(page.resolution || '2K');
+      setArtStyle(page.artStyle || 'classic');
     }
   }, [page]);
 
   if (!page) return null;
+
+  const handleApplyStylePreset = (styleId: ArtStyle) => {
+    setArtStyle(styleId);
+    const styleDef = getArtStyleDefinition(styleId);
+    // Append or replace style directive in prompt
+    let cleanPrompt = prompt.trim();
+    if (!cleanPrompt.toLowerCase().includes(styleDef.name.toLowerCase())) {
+      cleanPrompt = `${cleanPrompt}. ${styleDef.promptDirective}`;
+    }
+    setPrompt(cleanPrompt);
+  };
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -47,6 +62,7 @@ export const PageEditorModal: React.FC<PageEditorModalProps> = ({
       storyCaption,
       prompt,
       resolution,
+      artStyle,
       funFactOrTip,
     });
     onClose();
@@ -113,6 +129,39 @@ export const PageEditorModal: React.FC<PageEditorModalProps> = ({
               placeholder="e.g., Make the rocket fiery red! or Did you know T-Rex had tiny arms?"
               className="w-full px-3 py-2 rounded-xl border border-gray-300 text-xs text-gray-900 focus:border-amber-500 focus:ring-2 focus:ring-amber-200 outline-hidden"
             />
+          </div>
+
+          {/* Quick Art Style Presets */}
+          <div>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="text-xs font-bold uppercase tracking-wider text-gray-700 flex items-center gap-1.5">
+                <Palette className="w-3.5 h-3.5 text-amber-600" />
+                <span>Art Style Preset</span>
+              </label>
+              <span className="text-[10px] text-amber-800 font-semibold bg-amber-50 px-2 py-0.5 rounded-md border border-amber-200">
+                Active: {getArtStyleDefinition(artStyle).name}
+              </span>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {ART_STYLES.map((style) => (
+                <button
+                  key={style.id}
+                  type="button"
+                  onClick={() => handleApplyStylePreset(style.id)}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-bold flex items-center gap-1 transition-all cursor-pointer ${
+                    artStyle === style.id
+                      ? 'bg-amber-600 text-white shadow-xs'
+                      : 'bg-gray-100 hover:bg-amber-50 text-gray-700 hover:text-amber-900 border border-gray-200'
+                  }`}
+                >
+                  <span>{style.emoji}</span>
+                  <span>{style.name}</span>
+                </button>
+              ))}
+            </div>
+            <p className="text-[10px] text-gray-500 mt-1">
+              Click any style to apply its unique drawing personality to this page's prompt.
+            </p>
           </div>
 
           {/* Image Line Art Prompt */}

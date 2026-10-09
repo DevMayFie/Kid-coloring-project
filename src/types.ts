@@ -4,7 +4,17 @@ export type AspectRatio = '3:4' | '1:1' | '4:3';
 
 export type ColoringDifficulty = 'toddler' | 'standard' | 'intricate';
 
-export type ActivityMode = 'standard' | 'color-by-numbers' | 'dot-to-dot';
+export type ActivityMode = 'standard' | 'color-by-numbers' | 'dot-to-dot' | 'maze';
+
+export type ArtStyle =
+  | 'classic'
+  | 'kawaii'
+  | 'storybook'
+  | 'comic'
+  | 'manga-chibi'
+  | 'geometric-mandala'
+  | 'vintage-woodcut'
+  | 'retro-cartoon';
 
 export type BookLanguage = 'en' | 'es' | 'fr' | 'de' | 'it' | 'pt' | 'ja';
 
@@ -39,8 +49,9 @@ export interface NumberLegendItem {
 }
 
 export type ChatModel =
-  | 'gemini-3.1-pro-preview'
+  | 'gemini-3.8-flash'
   | 'gemini-3.5-flash'
+  | 'gemini-3.1-pro-preview'
   | 'gemini-3.1-flash-lite';
 
 export interface DotNode {
@@ -57,6 +68,7 @@ export interface ColoringPage {
   secondaryCaption?: string;
   secondaryLanguage?: BookLanguage;
   funFactOrTip?: string;
+  artStyle?: ArtStyle;
   prompt: string;
   imageUrl?: string;
   status: 'pending' | 'generating' | 'completed' | 'error';
@@ -105,6 +117,7 @@ export interface FavoriteBook {
   dedication: string;
   dedicationAuthor?: string;
   activityMode?: ActivityMode;
+  artStyle?: ArtStyle;
   language?: BookLanguage;
   secondaryLanguage?: BookLanguage;
   difficulty?: ColoringDifficulty;
@@ -135,6 +148,7 @@ export interface ColoringBook {
   theme: string;
   childName: string;
   difficulty?: ColoringDifficulty;
+  artStyle?: ArtStyle;
   activityMode?: ActivityMode;
   language?: BookLanguage;
   secondaryLanguage?: BookLanguage;

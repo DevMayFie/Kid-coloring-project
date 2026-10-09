@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   Download,
@@ -38,6 +38,7 @@ import { FlipBookReader } from './FlipBookReader';
 import { FilmStripNav } from './FilmStripNav';
 import { PageBorderRenderer } from './PageBorderRenderer';
 import { BorderSelectorModal } from './BorderSelectorModal';
+import { getArtStyleDefinition } from '../utils/artStyles';
 import { PersonalizedHeroModal } from './PersonalizedHeroModal';
 import { CertificateModal } from './CertificateModal';
 import { VoiceRecorderWidget } from './VoiceRecorderWidget';
@@ -119,36 +120,41 @@ export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
   const [flipDirection, setFlipDirection] = useState<number>(1);
 
   // Compile sequential slide entries for fast page-flip navigation
-  const navSlides: { id: string; label: string; title: string; index: number; type: 'cover' | 'page' | 'stickers' }[] = [];
-  if (book.coverImageUrl || book.coverStatus) {
-    navSlides.push({
-      id: 'nav-cover',
-      label: '📕 Cover',
-      title: `${book.childName}'s Custom Cover`,
-      index: 0,
-      type: 'cover',
+  const navSlides = useMemo<
+    { id: string; label: string; title: string; index: number; type: 'cover' | 'page' | 'stickers' }[]
+  >(() => {
+    const list: { id: string; label: string; title: string; index: number; type: 'cover' | 'page' | 'stickers' }[] = [];
+    if (book.coverImageUrl || book.coverStatus) {
+      list.push({
+        id: 'nav-cover',
+        label: '📕 Cover',
+        title: `${book.childName}'s Custom Cover`,
+        index: 0,
+        type: 'cover',
+      });
+    }
+    book.pages.forEach((p, idx) => {
+      const slideIdx = (book.coverImageUrl || book.coverStatus ? 1 : 0) + idx;
+      list.push({
+        id: `nav-${p.id}`,
+        label: `Page ${p.pageNumber}`,
+        title: p.title,
+        index: slideIdx,
+        type: 'page',
+      });
     });
-  }
-  book.pages.forEach((p, idx) => {
-    const slideIdx = (book.coverImageUrl || book.coverStatus ? 1 : 0) + idx;
-    navSlides.push({
-      id: `nav-${p.id}`,
-      label: `Page ${p.pageNumber}`,
-      title: p.title,
-      index: slideIdx,
-      type: 'page',
-    });
-  });
-  if (book.stickerSheet?.imageUrl || book.stickerSheet?.status) {
-    const stickerSlideIdx = (book.coverImageUrl || book.coverStatus ? 1 : 0) + book.pages.length;
-    navSlides.push({
-      id: 'nav-stickers',
-      label: '✂️ Stickers',
-      title: book.stickerSheet.title || `${book.childName}'s Printable Stickers`,
-      index: stickerSlideIdx,
-      type: 'stickers',
-    });
-  }
+    if (book.stickerSheet?.imageUrl || book.stickerSheet?.status) {
+      const stickerSlideIdx = (book.coverImageUrl || book.coverStatus ? 1 : 0) + book.pages.length;
+      list.push({
+        id: 'nav-stickers',
+        label: '✂️ Stickers',
+        title: book.stickerSheet.title || `${book.childName}'s Printable Stickers`,
+        index: stickerSlideIdx,
+        type: 'stickers',
+      });
+    }
+    return list;
+  }, [book.coverImageUrl, book.coverStatus, book.childName, book.pages, book.stickerSheet]);
 
   const safeActiveIndex = Math.max(0, Math.min(activePageIndex, Math.max(0, navSlides.length - 1)));
   const currentNavSlide = navSlides[safeActiveIndex] || navSlides[0];
@@ -609,16 +615,15 @@ export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
       </div>
 
       {/* Main Coloring Book Reader / Grid Views with Animated Flip Transition */}
-      <AnimatePresence mode="wait" custom={flipDirection}>
+      <AnimatePresence mode="wait">
         {viewMode === 'flip' ? (
           <motion.div
             key="view-flip"
-            custom={flipDirection}
-            initial={{ opacity: 0, rotateY: flipDirection > 0 ? 12 : -12, scale: 0.985 }}
-            animate={{ opacity: 1, rotateY: 0, scale: 1 }}
-            exit={{ opacity: 0, rotateY: flipDirection > 0 ? -12 : 12, scale: 0.985 }}
-            transition={{ duration: 0.32, ease: [0.22, 1, 0.36, 1] }}
-            style={{ transformStyle: 'preserve-3d' }}
+            initial={{ opacity: 0, y: 12, scale: 0.99 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -12, scale: 0.99 }}
+            transition={{ duration: 0.26, ease: [0.22, 1, 0.36, 1] }}
+            className="w-full"
           >
             <FlipBookReader
               book={book}
@@ -753,6 +758,12 @@ export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
                   <div className="inline-block px-3 py-1 rounded-full bg-amber-600 text-white text-xs font-black uppercase tracking-wider shadow-2xs">
                     ★ Book Cover ★
                   </div>
+                  {book.artStyle && (
+                    <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-100 text-amber-900 text-xs font-bold border border-amber-300 shadow-2xs">
+                      <span>{getArtStyleDefinition(book.artStyle).emoji}</span>
+                      <span>{getArtStyleDefinition(book.artStyle).name} Style</span>
+                    </div>
+                  )}
                   <button
                     type="button"
                     onClick={() => {
@@ -1116,8 +1127,8 @@ export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
                             <AlertCircle className="w-6 h-6" />
                           </div>
                           <p className="text-xs font-bold text-gray-900">Drawing Incomplete</p>
-                          <p className="text-[11px] text-gray-600 max-w-[200px] line-clamp-2">
-                            {page.errorMessage || 'Could not generate this page image.'}
+                          <p className="text-[11px] text-rose-900 bg-rose-50/90 border border-rose-200/90 rounded-xl px-2.5 py-1.5 leading-relaxed font-medium shadow-2xs max-w-[220px]">
+                            {page.errorMessage || 'Could not generate this page image. Please try again.'}
                           </p>
                           <button
                             type="button"
@@ -1822,11 +1833,15 @@ export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
       <FavoritesModal
         isOpen={isFavoritesModalOpen}
         onClose={() => setIsFavoritesModalOpen(false)}
-        onLoadBook={(fav) => {
+        favorites={favorites}
+        onRemoveFavorite={(id) => {
+          removeFavorite(id);
+          setFavorites(getFavorites());
+        }}
+        onLoadFavorite={(fav) => {
           onLoadFavorite?.(fav);
           setIsFavoritesModalOpen(false);
         }}
-        currentBookId={book.id}
       />
 
       {/* Side-Scrolling Film Strip Navigation Bar (Quick Jump Thumbnails) */}

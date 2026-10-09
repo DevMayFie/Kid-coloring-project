@@ -114,7 +114,9 @@ export function PersonalizedHeroModal({
     try {
       const sessionId = getClientSessionId();
       const consentRecord = await getParentalConsentRecordAsync();
-      let token = consentRecord?.consentToken;
+      const isNameMatching =
+        consentRecord?.childName?.trim().toLowerCase() === cleanHeroName.trim().toLowerCase();
+      let token = isNameMatching ? consentRecord?.consentToken : undefined;
       if (!token) {
         try {
           const tokenRes = await fetch('/api/verify-parental-consent', {
@@ -484,7 +486,7 @@ export function PersonalizedHeroModal({
             fileInputRef.current?.click();
           }, 150);
         }}
-        childName={heroName}
+        childName={heroName?.trim() || 'Hero'}
         hasPhoto={true}
         actionTitle="Upload Child Photo"
       />

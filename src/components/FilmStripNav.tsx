@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   ChevronLeft,
@@ -28,7 +28,7 @@ export interface FilmStripItem {
   badge: string;
   title: string;
   imageUrl?: string;
-  status?: 'completed' | 'generating' | 'error';
+  status?: 'completed' | 'generating' | 'error' | 'pending';
   domId: string;
   slideIndex: number;
 }
@@ -71,57 +71,65 @@ export const FilmStripNav: React.FC<FilmStripNavProps> = ({
   const stripScrollRef = useRef<HTMLDivElement>(null);
 
   // Build ordered list of film strip items: Cover + Pages + Stickers
-  const items: FilmStripItem[] = [];
+  const items = useMemo<FilmStripItem[]>(() => {
+    const list: FilmStripItem[] = [];
 
-  // 1. Cover item
-  items.push({
-    id: 'film-item-cover',
-    type: 'cover',
-    label: 'Cover',
-    badge: '★ Cover',
-    title: `${book.childName}'s Custom Cover`,
-    imageUrl: book.coverImageUrl,
-    status: book.coverStatus,
-    domId: 'coloring-book-cover-card',
-    slideIndex: 0,
-  });
-
-  // 2. Coloring Pages
-  book.pages.forEach((page, idx) => {
-    items.push({
-      id: `film-item-page-${page.id}`,
-      type: 'page',
-      label: `Page ${page.pageNumber}`,
-      badge: `P${page.pageNumber}`,
-      title: `Page ${page.pageNumber}: ${page.title}`,
-      imageUrl: page.imageUrl,
-      status: page.status,
-      domId: `coloring-page-card-${idx + 1}`,
-      slideIndex: (book.coverImageUrl ? 1 : 0) + idx,
+    // 1. Cover item
+    list.push({
+      id: 'film-item-cover',
+      type: 'cover',
+      label: 'Cover',
+      badge: '★ Cover',
+      title: `${book.childName}'s Custom Cover`,
+      imageUrl: book.coverImageUrl,
+      status: book.coverStatus,
+      domId: 'coloring-book-cover-card',
+      slideIndex: 0,
     });
-  });
 
-  // 3. Bonus Sticker Sheet (if available)
-  if (book.stickerSheet) {
-    items.push({
-      id: 'film-item-stickers',
-      type: 'stickers',
-      label: 'Stickers',
-      badge: '✂️ Cut-Outs',
-      title: book.stickerSheet.title || 'Bonus Cut-Out Sticker Sheet',
-      imageUrl: book.stickerSheet.imageUrl,
-      status: book.stickerSheet.status,
-      domId: 'coloring-book-sticker-sheet',
-      slideIndex: (book.coverImageUrl ? 1 : 0) + book.pages.length,
+    // 2. Coloring Pages
+    book.pages.forEach((page, idx) => {
+      list.push({
+        id: `film-item-page-${page.id}`,
+        type: 'page',
+        label: `Page ${page.pageNumber}`,
+        badge: `P${page.pageNumber}`,
+        title: `Page ${page.pageNumber}: ${page.title}`,
+        imageUrl: page.imageUrl,
+        status: page.status,
+        domId: `coloring-page-card-${idx + 1}`,
+        slideIndex: (book.coverImageUrl ? 1 : 0) + idx,
+      });
     });
-  }
+
+    // 3. Bonus Sticker Sheet (if available)
+    if (book.stickerSheet) {
+      list.push({
+        id: 'film-item-stickers',
+        type: 'stickers',
+        label: 'Stickers',
+        badge: '✂️ Cut-Outs',
+        title: book.stickerSheet.title || 'Bonus Cut-Out Sticker Sheet',
+        imageUrl: book.stickerSheet.imageUrl,
+        status: book.stickerSheet.status,
+        domId: 'coloring-book-sticker-sheet',
+        slideIndex: (book.coverImageUrl ? 1 : 0) + book.pages.length,
+      });
+    }
+
+    return list;
+  }, [book.childName, book.coverImageUrl, book.coverStatus, book.pages, book.stickerSheet]);
+
+  const itemDomKeys = useMemo(() => items.map((it) => it.domId).join(','), [items]);
 
   // Check scroll boundary state to show/hide arrow buttons
   const checkScrollBoundaries = () => {
     const el = stripScrollRef.current;
     if (!el) return;
-    setCanScrollLeft(el.scrollLeft > 8);
-    setCanScrollRight(el.scrollLeft + el.clientWidth < el.scrollWidth - 8);
+    const canLeft = el.scrollLeft > 8;
+    const canRight = el.scrollLeft + el.clientWidth < el.scrollWidth - 8;
+    setCanScrollLeft((prev) => (prev !== canLeft ? canLeft : prev));
+    setCanScrollRight((prev) => (prev !== canRight ? canRight : prev));
   };
 
   useEffect(() => {
@@ -145,7 +153,7 @@ export const FilmStripNav: React.FC<FilmStripNavProps> = ({
       (entries) => {
         entries.forEach((entry) => {
           if (entry.isIntersecting && entry.intersectionRatio >= 0.3) {
-            setActiveItemDomId(entry.target.id);
+            setActiveItemDomId((prev) => (prev !== entry.target.id ? entry.target.id : prev));
           }
         });
       },
@@ -164,7 +172,7 @@ export const FilmStripNav: React.FC<FilmStripNavProps> = ({
     return () => {
       observer.disconnect();
     };
-  }, [items, viewMode]);
+  }, [itemDomKeys, viewMode]);
 
   // Scroll active thumbnail into view in the film strip
   useEffect(() => {

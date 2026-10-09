@@ -202,15 +202,22 @@ setInterval(() => {
   }
 }, 5 * 60 * 1000);
 
+/**
+ * Reliable extraction of anonymous session identifier across headers, body, query, and IP.
+ */
+function getAnonymousSessionId(req: express.Request): string {
+  const rawSession =
+    (req.headers['x-session-id'] as string) ||
+    (req.body && req.body.sessionId) ||
+    (req.query && (req.query.sessionId as string)) ||
+    req.ip ||
+    'unknown-session';
+  return sanitizeSafeString(rawSession, 120) || 'unknown-session';
+}
+
 function createSessionQuotaMiddleware(config: SessionQuotaConfig): express.RequestHandler {
   return (req, res, next) => {
-    const rawSession =
-      (req.headers['x-session-id'] as string) ||
-      (req.body && req.body.sessionId) ||
-      (req.query && (req.query.sessionId as string)) ||
-      req.ip ||
-      'unknown-session';
-    const cleanSession = sanitizeSafeString(rawSession, 120) || 'unknown-session';
+    const cleanSession = getAnonymousSessionId(req);
     const bucketKey = `${config.endpointName}:${cleanSession}`;
     const now = Date.now();
     const windowMs = config.windowMinutes * 60 * 1000;
@@ -445,6 +452,7 @@ const PlanBookSchema = z
       .default(5),
     difficulty: z.enum(['toddler', 'standard', 'intricate']).default('standard'),
     activityMode: z.enum(['standard', 'color-by-numbers', 'dot-to-dot']).default('standard'),
+    artStyle: z.enum(['classic', 'kawaii', 'storybook', 'comic', 'manga-chibi', 'geometric-mandala', 'vintage-woodcut', 'retro-cartoon']).default('classic'),
     secondaryLanguage: z.enum(['en', 'es', 'fr', 'de', 'it', 'pt', 'ja']).optional().nullable(),
   })
   .strip();
@@ -462,6 +470,7 @@ const GenerateImageSchema = z
     aspectRatio: z.enum(['1:1', '3:4', '4:3', '16:9', '9:16']).default('3:4'),
     difficulty: z.enum(['toddler', 'standard', 'intricate']).default('standard'),
     activityMode: z.enum(['standard', 'color-by-numbers', 'dot-to-dot']).default('standard'),
+    artStyle: z.enum(['classic', 'kawaii', 'storybook', 'comic', 'manga-chibi', 'geometric-mandala', 'vintage-woodcut', 'retro-cartoon']).default('classic'),
     modelPreference: z.enum(['auto', 'fast', 'pro']).default('auto'),
   })
   .strip();
@@ -475,6 +484,7 @@ const GenerateCoverSchema = z
     aspectRatio: z.enum(['1:1', '3:4', '4:3', '16:9', '9:16']).default('3:4'),
     difficulty: z.enum(['toddler', 'standard', 'intricate']).default('standard'),
     styleVariant: z.enum(['mascot', 'emblem', 'adventure']).default('mascot'),
+    artStyle: z.enum(['classic', 'kawaii', 'storybook', 'comic', 'manga-chibi', 'geometric-mandala', 'vintage-woodcut', 'retro-cartoon']).optional().default('classic'),
     forceVector: z.boolean().default(false),
   })
   .strip();
@@ -504,7 +514,8 @@ const PhotoToLineArtSchema = z
       }),
     subjectType: z.enum(['child', 'pet', 'toy', 'custom']).default('child'),
     difficulty: z.enum(['toddler', 'standard', 'intricate']).default('standard'),
-    childName: createSafeTextSchema({ fieldName: 'childName', min: 0, max: 50 }).default('Hero'),
+    artStyle: z.enum(['classic', 'kawaii', 'storybook', 'comic', 'manga-chibi', 'geometric-mandala', 'vintage-woodcut', 'retro-cartoon']).optional().default('classic'),
+    childName: createSafeTextSchema({ fieldName: 'childName', min: 1, max: 50, required: true }).default('Hero'),
     theme: createSafeTextSchema({ fieldName: 'theme', min: 0, max: 80 }).default('adventure'),
     sceneSetting: createSafeTextSchema({ fieldName: 'sceneSetting', min: 0, max: 200 }).default(
       'exploring a whimsical wonderland'
@@ -518,6 +529,8 @@ const ChatSchema = z
   .object({
     message: createSafeTextSchema({ fieldName: 'message content', min: 1, max: 600 }).optional(),
     chatSessionId: z.string().trim().max(100).optional(),
+    sessionId: z.string().trim().max(120).optional(),
+    clearSession: z.boolean().optional(),
     // Client-supplied turns are strictly restricted to role: 'user' to prevent model turn injection
     messages: z
       .array(
@@ -529,15 +542,17 @@ const ChatSchema = z
       .max(20)
       .optional(),
     model: z
-      .enum(['gemini-3.8-flash', 'gemini-3.1-pro-preview', 'gemini-3.1-flash-lite'])
+      .enum(['gemini-3.8-flash', 'gemini-3.5-flash', 'gemini-3.1-pro-preview', 'gemini-3.1-flash-lite'])
+      .transform((m) => (m === 'gemini-3.5-flash' ? 'gemini-3.8-flash' : m))
       .default('gemini-3.8-flash'),
     role: z.enum(['companion', 'complex_storyteller', 'quick_sparks']).default('companion'),
     context: z
       .object({
-        theme: createSafeTextSchema({ fieldName: 'context theme', min: 0, max: 100 }).optional(),
-        childName: createSafeTextSchema({ fieldName: 'context childName', min: 0, max: 50 }).optional(),
+        theme: createSafeTextSchema({ fieldName: 'context theme', min: 0, max: 100 }).optional().nullable(),
+        childName: createSafeTextSchema({ fieldName: 'context childName', min: 0, max: 50 }).optional().nullable(),
       })
       .optional()
+      .nullable()
       .default({}),
   })
   .refine((data) => Boolean(data.message || (data.messages && data.messages.length > 0)), {
@@ -548,7 +563,7 @@ const ChatSchema = z
 const VerifyParentalConsentSchema = z
   .object({
     guardianRole: z.enum(['parent', 'guardian', 'educator']).default('parent'),
-    childName: createSafeTextSchema({ fieldName: 'childName', min: 0, max: 50 }).optional().default(''),
+    childName: createSafeTextSchema({ fieldName: 'childName', min: 1, max: 50, required: true }),
     sessionId: z.string().trim().max(120).optional(),
     coppaConfirmed: z.boolean().refine((val) => val === true, {
       message: 'COPPA confirmation is required to issue a parental consent verification token.',
@@ -611,9 +626,21 @@ app.get('/api/health', (_req, res) => {
 // Project source export endpoint with rate limiting, caching, and clean filtering
 // Protected or disabled in production to prevent arbitrary source code downloads
 app.get('/api/download-project', downloadRateLimiter, (req, res) => {
+  // SECURITY: Unconditionally reject passing admin keys via URL query parameters (CWE-598)
+  // to prevent leakage in server access logs, browser history, referrers, and proxy logs
+  if (req.query.adminKey || req.query['admin-key'] || req.query.key || req.query.admin_key || req.query.token) {
+    return res.status(400).json({
+      success: false,
+      error: 'Admin authentication key must not be passed in URL query parameters. Please use the X-Admin-Key or Authorization header.',
+    });
+  }
+
   if (process.env.NODE_ENV === 'production') {
-    const adminKey = req.headers['x-admin-key'] || req.query.adminKey;
-    if (!process.env.ADMIN_KEY || adminKey !== process.env.ADMIN_KEY) {
+    const authHeader = req.headers['authorization'];
+    const bearerKey = authHeader?.startsWith('Bearer ') ? authHeader.slice(7).trim() : undefined;
+    const adminKey = (req.headers['x-admin-key'] as string) || bearerKey;
+
+    if (!process.env.ADMIN_KEY || !adminKey || adminKey !== process.env.ADMIN_KEY) {
       return res.status(403).json({
         success: false,
         error: 'Project source archive download is disabled in production environments.',
@@ -683,6 +710,7 @@ const handlePlanBook: express.RequestHandler = async (req, res) => {
       difficulty,
       activityMode,
       secondaryLanguage: rawSecondaryLanguage,
+      artStyle = 'classic',
     } = validationResult.data;
 
     const theme = sanitizeSafeString(rawTheme, 100) || 'space dinosaurs';
@@ -758,13 +786,50 @@ const handlePlanBook: express.RequestHandler = async (req, res) => {
 - Also provide "secondaryTitle" for the book in "${secondaryLanguage}".`;
     }
 
+    let artStyleInstruction = '';
+    if (artStyle === 'kawaii') {
+      artStyleInstruction = `CRITICAL ART STYLE REQUIREMENT: KAWAII & CUTE
+- Style: Ultra-cute Japanese chibi aesthetic with bubbly rounded contours, oversized sparkly joyful eyes, sweet smiling expressions, blushing cheek marks, and clean minimalist outlines.
+- In each scene's imagePrompt, specify: "Kawaii cute Japanese chibi line art style, ultra-cute bubbly rounded outlines, oversized joyful eyes, sweet smiling expressions, clean minimalist ink outlines..."`;
+    } else if (artStyle === 'storybook') {
+      artStyleInstruction = `CRITICAL ART STYLE REQUIREMENT: FAIRY TALE WHIMSY
+- Style: Whimsical folklore storybook illustration with charming flora, cozy enchanted scenery, and gentle storybook textures.
+- In each scene's imagePrompt, specify: "Whimsical fairy tale storybook illustration line art style, charming folklore character design, whimsical flora, enchanted scenery, clean crisp black outlines..."`;
+    } else if (artStyle === 'comic') {
+      artStyleInstruction = `CRITICAL ART STYLE REQUIREMENT: COMIC BOOK ACTION
+- Style: Dynamic superhero comic ink lines, action silhouettes, dramatic heroic poses, and punchy pop-art coloring areas.
+- In each scene's imagePrompt, specify: "Dynamic superhero comic book line art style, bold graphic ink outlines, energetic action silhouettes, punchy pop-art coloring areas, confident ink contours..."`;
+    } else if (artStyle === 'manga-chibi') {
+      artStyleInstruction = `CRITICAL ART STYLE REQUIREMENT: MANGA & ANIME
+- Style: Stylized anime chibi line art with oversized expressive eyes, cute anime proportions, and crisp clean ink pen lines.
+- In each scene's imagePrompt, specify: "Manga anime chibi line art style, oversized expressive anime eyes, cute chibi proportions, stylized hair silhouettes, crisp clean pen ink outlines..."`;
+    } else if (artStyle === 'geometric-mandala') {
+      artStyleInstruction = `CRITICAL ART STYLE REQUIREMENT: MANDALA & PATTERNS
+- Style: Meditative geometric mandala patterns, kaleidoscopic symmetries, and detailed ornamental texture fills.
+- In each scene's imagePrompt, specify: "Geometric mandala decorative line art style, symmetrical floral mandala patterns, ornamental geometric textures, crisp clean black lines..."`;
+    } else if (artStyle === 'vintage-woodcut') {
+      artStyleInstruction = `CRITICAL ART STYLE REQUIREMENT: VINTAGE STORYBOOK
+- Style: Timeless classic fairy-tale engraving look with elegant ink contours and classic botanical accents.
+- In each scene's imagePrompt, specify: "Vintage classic children's book engraving line art style, timeless fairy tale storybook ink outlines, classic botanical accents, elegant clean character outlines..."`;
+    } else if (artStyle === 'retro-cartoon') {
+      artStyleInstruction = `CRITICAL ART STYLE REQUIREMENT: RETRO 1930s CARTOON
+- Style: Bouncy 1930s rubber-hose animation line art with noodle limbs, pie eyes, and vintage cartoon spirit.
+- In each scene's imagePrompt, specify: "1930s vintage rubber-hose cartoon animation line art style, bouncy noodle arms, pie-shaped cartoon eyes, playful vintage animation contours, bold ink outlines..."`;
+    } else {
+      artStyleInstruction = `CRITICAL ART STYLE REQUIREMENT: CLASSIC STORYBOOK
+- Style: Classic children's coloring book with clean, confident bold black outlines and joyful balanced storytelling.
+- In each scene's imagePrompt, specify: "Classic children's coloring book page, crisp bold black outlines, clear joyful character expressions, wide open coloring spaces..."`;
+    }
+
     const prompt = `You are an expert children's coloring book author and illustrator planner.
 Create a personalized ${validPageCount}-page coloring book plan for a child named "${childName}" with the theme "${theme}".
 Difficulty Level: ${difficulty.toUpperCase()}.
 Activity Mode: ${activityMode.toUpperCase()}.
+Artistic Style: ${artStyle.toUpperCase()}.
 ${cleanAuthor ? `Book dedicated by: "${cleanAuthor}".` : ''}
 ${difficultyInstruction}
 ${activityInstruction}
+${artStyleInstruction}
 ${languageInstruction}
 ${userNotes ? `Additional user instructions: ${userNotes}` : ''}
 
@@ -856,6 +921,7 @@ CRITICAL RULES:
       bookTitle: parsed.bookTitle,
       subtitle: parsed.subtitle,
       coverPrompt: parsed.coverPrompt,
+      artStyle,
     });
   } catch (error: any) {
     console.error('Error planning book:', error);
@@ -1014,6 +1080,7 @@ app.post('/api/generate-image', imageRateLimiter, imageSessionQuota, async (req,
       aspectRatio,
       difficulty,
       activityMode,
+      artStyle = 'classic',
       modelPreference,
     } = parsed.data;
 
@@ -1024,14 +1091,34 @@ app.post('/api/generate-image', imageRateLimiter, imageSessionQuota, async (req,
 
     const ai = getGenAI();
 
+    // Adjust prompt directives based on chosen art style
+    let artStyleDirective = '';
+    if (artStyle === 'kawaii') {
+      artStyleDirective = 'Style: Ultra-cute Japanese Kawaii chibi line art with big joyful eyes, rounded bubbly outlines, adorable smiles, blushing cheeks, and charming playful minimalism.';
+    } else if (artStyle === 'storybook') {
+      artStyleDirective = 'Style: Whimsical fairy-tale storybook illustration line art with charming expressive characters, magical flora, and warm cheerful outlines.';
+    } else if (artStyle === 'comic') {
+      artStyleDirective = 'Style: Dynamic superhero comic book line art with bold action ink lines, energetic silhouettes, and punchy pop-art coloring spaces.';
+    } else if (artStyle === 'manga-chibi') {
+      artStyleDirective = 'Style: Manga chibi anime line art with oversized expressive eyes, miniature cute bodies, stylized hair, and clean pen ink outlines.';
+    } else if (artStyle === 'geometric-mandala') {
+      artStyleDirective = 'Style: Geometric mandala decorative line art with kaleidoscopic symmetry, floral mandala patterns, and meditative repeating line motifs.';
+    } else if (artStyle === 'vintage-woodcut') {
+      artStyleDirective = 'Style: Vintage storybook woodcut engraving style with classic storybook hatching, traditional fairy tale ink outlines, and antique botanical charm.';
+    } else if (artStyle === 'retro-cartoon') {
+      artStyleDirective = 'Style: 1930s rubber-hose retro cartoon animation line art with noodle limbs, pie eyes, bouncy retro energy, and bold classic cartoon ink contours.';
+    } else {
+      artStyleDirective = 'Style: Classic children\'s coloring book page with clean, confident bold black outlines.';
+    }
+
     // Adjust prompt directives based on chosen difficulty
     let difficultyDirective = '';
     if (difficulty === 'toddler') {
-      difficultyDirective = 'Style: Simple thick lines for toddlers. Ultra-bold massive chunky black outlines, giant open shapes for chunky crayons, minimal elements, zero clutter, zero fine lines, zero shading, pure clean white paper background.';
+      difficultyDirective = 'Detail density: Simple thick lines for toddlers. Ultra-bold massive chunky black outlines, giant open shapes for chunky crayons, minimal elements, zero clutter, zero fine lines, zero shading, pure clean white paper background.';
     } else if (difficulty === 'intricate') {
-      difficultyDirective = 'Style: Intricate patterns for older children. Detailed fine black line art, complex decorative patterns, zentangle textures, ornate background scenery, intricate detailed coloring spaces for colored pencils, pure clean white paper background, zero shading or gray gradients.';
+      difficultyDirective = 'Detail density: Intricate patterns for older children. Detailed fine black line art, complex decorative patterns, zentangle textures, ornate background scenery, intricate detailed coloring spaces for colored pencils, pure clean white paper background, zero shading or gray gradients.';
     } else {
-      difficultyDirective = 'Style: Classic children\'s coloring book page. Crisp thick black ink outlines, clean lines, wide open coloring spaces, zero gray shading, zero halftone dots, pure clean white paper background.';
+      difficultyDirective = 'Detail density: Classic children\'s coloring book page. Crisp thick black ink outlines, clean lines, wide open coloring spaces, zero gray shading, zero halftone dots, pure clean white paper background.';
     }
 
     let activityDirective = '';
@@ -1041,8 +1128,8 @@ app.post('/api/generate-image', imageRateLimiter, imageSessionQuota, async (req,
       activityDirective = 'Activity style: Connect the dots puzzle with sequential numbered dots (1 through 25) outlining the main subject for kids to connect with a line and then color.';
     }
 
-    // Ensure the prompt enforces clean, printable black-and-white thick line art matching difficulty
-    const enhancedPrompt = `${rawPrompt}. ${difficultyDirective} ${activityDirective} Completely pure clean white paper background, absolutely zero gray shading, zero halftone dots, zero crosshatching, no grayscale, no color fills, high contrast black-and-white line drawing suitable for printing.`;
+    // Ensure the prompt enforces clean, printable black-and-white thick line art matching difficulty and style
+    const enhancedPrompt = `${rawPrompt}. ${artStyleDirective} ${difficultyDirective} ${activityDirective} Completely pure clean white paper background, absolutely zero gray shading, zero halftone dots, zero crosshatching, no grayscale, no color fills, high contrast black-and-white line drawing suitable for printing.`;
 
     const validSizes = ['1K', '2K', '4K'];
     const chosenSize = validSizes.includes(imageSize) ? imageSize : '1K';
@@ -1142,6 +1229,7 @@ app.post('/api/generate-cover', imageRateLimiter, coverSessionQuota, async (req,
       aspectRatio,
       difficulty,
       styleVariant,
+      artStyle = 'classic',
       forceVector,
     } = parsed.data;
 
@@ -1168,7 +1256,7 @@ app.post('/api/generate-cover', imageRateLimiter, coverSessionQuota, async (req,
       });
     }
 
-    const enhancedPrompt = prompt ? sanitizeSafeString(prompt, 700) : buildThematicCoverAiPrompt(rawTheme, rawChildName, difficulty);
+    const enhancedPrompt = prompt ? sanitizeSafeString(prompt, 700) : buildThematicCoverAiPrompt(rawTheme, rawChildName, difficulty, artStyle);
     let imageUrl = '';
 
     try {
@@ -1311,6 +1399,7 @@ app.post('/api/photo-to-line-art', imageRateLimiter, photoToArtSessionQuota, asy
       photoBase64,
       subjectType,
       difficulty,
+      artStyle = 'classic',
       childName: rawChildName,
       theme: rawTheme,
       sceneSetting: rawSceneSetting,
@@ -1321,13 +1410,15 @@ app.post('/api/photo-to-line-art', imageRateLimiter, photoToArtSessionQuota, asy
     const theme = sanitizeSafeString(rawTheme, 60) || 'adventure';
     const sceneSetting = sanitizeSafeString(rawSceneSetting, 150) || 'exploring a whimsical wonderland';
 
-    // Verify cryptographic child name binding
+    // Verify cryptographic child name binding:
+    // Strictly require that the token's child binding matches the target child name.
+    // Disallow empty-binding bypass and disallow 'hero' wildcard bypass.
     const tokenChild = (consentCheck.payload?.childName || '').trim().toLowerCase();
     const currentChild = childName.trim().toLowerCase();
-    if (tokenChild && currentChild && tokenChild !== currentChild && tokenChild !== 'hero') {
+    if (!tokenChild || !currentChild || tokenChild !== currentChild) {
       return res.status(403).json({
         success: false,
-        error: `Parental consent token was issued for "${consentCheck.payload.childName}" and cannot be used for "${childName}".`,
+        error: `Parental consent token was issued for "${consentCheck.payload?.childName || 'unspecified'}" and cannot be used for "${childName}". Please confirm parental consent for this child.`,
         isConsentRequired: true,
       });
     }
@@ -1382,6 +1473,7 @@ Style directives:
 - Absolutely zero gray shading, zero halftone dots, zero crosshatching, zero colors.
 - Distinct open spaces for children to color with crayons or markers.
 - Joyful, friendly, expressive character design.
+- ${artStyle === 'kawaii' ? 'Kawaii Japanese cute style with bubbly rounded outlines and big sweet eyes.' : artStyle === 'comic' ? 'Dynamic comic book action ink style with heroic silhouettes.' : artStyle === 'manga-chibi' ? 'Manga chibi anime style with cute proportions and expressive eyes.' : artStyle === 'geometric-mandala' ? 'Geometric mandala pattern style with ornamental motifs.' : artStyle === 'vintage-woodcut' ? 'Vintage fairy-tale engraving style with antique storybook ink outlines.' : artStyle === 'retro-cartoon' ? '1930s rubber-hose cartoon animation style with bouncy noodle arms and pie eyes.' : 'Classic storybook coloring page style with clean bold outlines.'}
 - ${difficulty === 'toddler' ? 'Simple thick lines for toddlers with giant shapes.' : difficulty === 'intricate' ? 'Intricate decorative patterns and details for older kids.' : 'Classic crisp children\'s coloring book page.'}`;
 
     let response;
@@ -1480,18 +1572,28 @@ app.post('/api/chat', chatRateLimiter, chatSessionQuota, async (req, res) => {
     const {
       message,
       chatSessionId,
+      clearSession,
       messages,
       model = 'gemini-3.8-flash',
       role = 'companion',
       context = {},
     } = parsed.data;
 
-    // Identify session key for server-controlled conversation history
-    const sessionKey =
-      chatSessionId ||
-      (req.headers['x-session-id'] as string) ||
-      req.ip ||
-      'default-chat-session';
+    // Compound session key: strictly binds anonymousSessionId + chatSessionId.
+    // This prevents separate clients from choosing or guessing the same chatSessionId
+    // and sharing the same server-side conversation state.
+    const anonSessionId = getAnonymousSessionId(req);
+    const cleanChatSessionId = sanitizeSafeString(chatSessionId, 100) || 'default-chat';
+    const sessionKey = `${anonSessionId}:${cleanChatSessionId}`;
+
+    if (clearSession) {
+      serverChatHistories.delete(sessionKey);
+      return res.json({
+        success: true,
+        cleared: true,
+        message: 'Chat history cleared for this session.',
+      });
+    }
 
     // Retrieve or initialize server-controlled conversation history
     let serverHistory = serverChatHistories.get(sessionKey) || [];
@@ -1515,6 +1617,21 @@ app.post('/api/chat', chatRateLimiter, chatSessionQuota, async (req, res) => {
     const safeTheme = sanitizeSafeString(context?.theme, 80);
     const safeChildName = sanitizeSafeString(context?.childName, 40);
 
+    // Chat context validation: Kid-safety & prompt injection defense
+    if (safeTheme) {
+      const themeKidCheck = validateKidContentServer(safeTheme);
+      if (!themeKidCheck.valid) {
+        return res.status(400).json({ success: false, error: themeKidCheck.reason });
+      }
+    }
+
+    if (safeChildName) {
+      const nameKidCheck = validateKidContentServer(safeChildName);
+      if (!nameKidCheck.valid) {
+        return res.status(400).json({ success: false, error: nameKidCheck.reason });
+      }
+    }
+
     const ai = getGenAI();
 
     // Select system instruction strictly bounded to coloring book creativity
@@ -1536,11 +1653,14 @@ STRICT DOMAIN BOUNDARIES:
       systemInstruction += `\nFocus on rapid, punchy bulleted ideas for coloring themes and props.`;
     }
 
-    let selectedModel = 'gemini-3.8-flash';
-    if (model === 'gemini-3.1-pro-preview' || role === 'complex_storyteller') {
-      selectedModel = 'gemini-3.1-pro-preview';
-    } else if (model === 'gemini-3.1-flash-lite' || role === 'quick_sparks') {
-      selectedModel = 'gemini-3.1-flash-lite';
+    // Respect explicitly requested model; fall back to role defaults only when model was not specified
+    let selectedModel = model || 'gemini-3.8-flash';
+    if (!parsed.data.model) {
+      if (role === 'complex_storyteller') {
+        selectedModel = 'gemini-3.1-pro-preview';
+      } else if (role === 'quick_sparks') {
+        selectedModel = 'gemini-3.1-flash-lite';
+      }
     }
 
     // Append ONLY the validated user turn to server-controlled history
@@ -1578,6 +1698,11 @@ STRICT DOMAIN BOUNDARIES:
       timestamp: Date.now(),
     });
 
+    // Ensure map size is bounded to prevent unbounded memory growth
+    if (serverChatHistories.size > 2000 && !serverChatHistories.has(sessionKey)) {
+      const oldestKey = serverChatHistories.keys().next().value;
+      if (oldestKey) serverChatHistories.delete(oldestKey);
+    }
     serverChatHistories.set(sessionKey, serverHistory);
 
     return res.json({
@@ -1592,6 +1717,18 @@ STRICT DOMAIN BOUNDARIES:
       error: 'Chat assistant is temporarily busy. Please try again in a moment.',
     });
   }
+});
+
+// Endpoint: Clear server-controlled chat history for this anonymous session + chat session
+app.post('/api/chat/clear', (req, res) => {
+  const anonSessionId = getAnonymousSessionId(req);
+  const cleanChatSessionId = sanitizeSafeString(
+    (req.body?.chatSessionId as string) || (req.query?.chatSessionId as string),
+    100
+  ) || 'default-chat';
+  const sessionKey = `${anonSessionId}:${cleanChatSessionId}`;
+  serverChatHistories.delete(sessionKey);
+  return res.json({ success: true, cleared: true, sessionKey });
 });
 
 // Start server with Vite middleware in development or static files in production

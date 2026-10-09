@@ -137,7 +137,8 @@ export function getThematicCoverDescription(theme: string, childName: string): s
 export function buildThematicCoverAiPrompt(
   theme: string,
   childName: string,
-  difficulty: 'toddler' | 'standard' | 'intricate' = 'standard'
+  difficulty: 'toddler' | 'standard' | 'intricate' = 'standard',
+  artStyle: string = 'classic'
 ): string {
   const cleanName = childName.trim() || 'the child';
   const cleanTheme = theme.trim() || 'Adventures';
@@ -151,10 +152,28 @@ export function buildThematicCoverAiPrompt(
     diffClause = 'Classic children\'s coloring book style: Bold crisp black outlines, clear joyful shapes, playful details, wide open spaces for crayons, pure white paper background, zero shading, zero grayscale, high contrast black-and-white.';
   }
 
+  let styleClause = '';
+  if (artStyle === 'kawaii') {
+    styleClause = 'Art style: Ultra-cute Japanese Kawaii chibi line art with big joyful eyes, rounded bubbly outlines, adorable smiles, blushing cheeks, and charming playful minimalism.';
+  } else if (artStyle === 'storybook') {
+    styleClause = 'Art style: Whimsical fairy-tale storybook illustration line art with charming expressive characters, magical flora, and warm cheerful outlines.';
+  } else if (artStyle === 'comic') {
+    styleClause = 'Art style: Dynamic superhero comic book line art with bold action ink lines, energetic silhouettes, and punchy pop-art coloring spaces.';
+  } else if (artStyle === 'manga-chibi') {
+    styleClause = 'Art style: Manga chibi anime line art with oversized expressive eyes, cute proportions, and clean pen ink outlines.';
+  } else if (artStyle === 'geometric-mandala') {
+    styleClause = 'Art style: Geometric mandala decorative line art with kaleidoscopic symmetry, floral mandala patterns, and meditative repeating line motifs.';
+  } else if (artStyle === 'vintage-woodcut') {
+    styleClause = 'Art style: Vintage storybook woodcut engraving style with classic storybook hatching, traditional fairy tale ink outlines, and antique botanical charm.';
+  } else if (artStyle === 'retro-cartoon') {
+    styleClause = 'Art style: 1930s rubber-hose retro cartoon animation line art with noodle limbs, pie eyes, bouncy retro energy, and bold classic cartoon ink contours.';
+  }
+
   return `Children's coloring book front cover page illustration, theme: "${cleanTheme}".
 Specifically engineered as a simple, charming thematic centerpiece illustration to accompany the child's name "${cleanName}".
 Composition: A clean, iconic central thematic character or mascot directly representing "${cleanTheme}" (for example, if space dinosaurs: a cute happy cartoon dinosaur floating in a bubble space helmet next to a smiling planet and twinkling stars).
 Includes a decorative celebratory ribbon banner or open framing area for "${cleanName}'s ${cleanTheme}".
+${styleClause}
 ${diffClause}
 Strict coloring book requirements: High-contrast pure black outlines on completely clean white paper background, 100% white fills, zero gray gradients, zero halftone screen dots, zero crosshatching shading. Perfect for children to color with crayons or markers.`;
 }

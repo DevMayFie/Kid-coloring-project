@@ -24,9 +24,11 @@ import {
   Globe,
   Heart,
   ShieldCheck,
+  Palette,
 } from 'lucide-react';
-import { ImageResolution, AspectRatio, ColoringDifficulty, ActivityMode, BookLanguage } from '../types';
+import { ImageResolution, AspectRatio, ColoringDifficulty, ActivityMode, BookLanguage, ArtStyle } from '../types';
 import { POPULAR_THEMES } from '../utils/sampleData';
+import { ART_STYLES, getArtStyleDefinition } from '../utils/artStyles';
 import { KidStoryBuilder } from './KidStoryBuilder';
 import { playChimeSound } from '../utils/kidAudio';
 import { validateKidContent, sanitizeInput } from '../utils/security';
@@ -51,6 +53,7 @@ interface BookFormProps {
   initialPageCount?: number;
   initialDifficulty?: ColoringDifficulty;
   initialActivityMode?: ActivityMode;
+  initialArtStyle?: ArtStyle;
   initialResolution: ImageResolution;
   initialAspectRatio: AspectRatio;
   isGenerating: boolean;
@@ -62,6 +65,7 @@ interface BookFormProps {
     pageCount: number;
     difficulty: ColoringDifficulty;
     activityMode: ActivityMode;
+    artStyle: ArtStyle;
     secondaryLanguage?: BookLanguage;
     resolution: ImageResolution;
     aspectRatio: AspectRatio;
@@ -77,6 +81,7 @@ export const BookForm: React.FC<BookFormProps> = ({
   initialPageCount = 5,
   initialDifficulty = 'standard',
   initialActivityMode = 'standard',
+  initialArtStyle = 'classic',
   initialResolution,
   initialAspectRatio,
   isGenerating,
@@ -89,6 +94,7 @@ export const BookForm: React.FC<BookFormProps> = ({
   const [pageCount, setPageCount] = useState<number>(initialPageCount);
   const [difficulty, setDifficulty] = useState<ColoringDifficulty>(initialDifficulty);
   const [activityMode, setActivityMode] = useState<ActivityMode>(initialActivityMode);
+  const [artStyle, setArtStyle] = useState<ArtStyle>(initialArtStyle);
   const [secondaryLanguage, setSecondaryLanguage] = useState<BookLanguage | ''>('');
   const [resolution, setResolution] = useState<ImageResolution>(initialResolution);
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>(initialAspectRatio);
@@ -113,6 +119,7 @@ export const BookForm: React.FC<BookFormProps> = ({
     pageCount: number;
     difficulty: ColoringDifficulty;
     activityMode: ActivityMode;
+    artStyle: ArtStyle;
     secondaryLanguage?: BookLanguage;
     resolution: ImageResolution;
     aspectRatio: AspectRatio;
@@ -227,6 +234,7 @@ export const BookForm: React.FC<BookFormProps> = ({
       pageCount: validatedPageCount,
       difficulty,
       activityMode,
+      artStyle,
       secondaryLanguage: secondaryLanguage || undefined,
       resolution,
       aspectRatio,
@@ -1059,6 +1067,84 @@ export const BookForm: React.FC<BookFormProps> = ({
                   : difficulty === 'intricate'
                   ? 'Prompt snippet: "Intricate coloring book page for older children, intricate patterns for older children, detailed crisp black line art, decorative zentangles, ornate background scenery, complex detailed coloring sections"'
                   : 'Prompt snippet: "Children\'s coloring book page, bold crisp black outlines, pure white background, clear recognizable shapes, playful fun details, large coloring spaces for crayons and markers"'}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* ARTISTIC STYLE SELECTOR */}
+        <div className="pt-2 border-t border-gray-100" id="art-style-selector-section">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 mb-2">
+            <label className="text-xs font-bold uppercase tracking-wider text-gray-700 flex items-center gap-1.5">
+              <Palette className="w-3.5 h-3.5 text-amber-600" />
+              Artistic Line Style
+            </label>
+            <span className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200/80 px-2 py-0.5 rounded-md font-semibold self-start sm:self-auto">
+              Changes drawing style & visual personality
+            </span>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5" id="art-style-grid">
+            {ART_STYLES.map((styleOption) => {
+              const isSelected = artStyle === styleOption.id;
+              return (
+                <button
+                  key={styleOption.id}
+                  type="button"
+                  id={`art-style-option-${styleOption.id}`}
+                  onClick={() => setArtStyle(styleOption.id)}
+                  className={`p-3 rounded-xl border text-left transition-all relative flex flex-col justify-between cursor-pointer ${
+                    isSelected
+                      ? 'border-amber-600 bg-amber-50/90 ring-2 ring-amber-500/20 shadow-xs'
+                      : 'border-gray-200 hover:border-amber-300 bg-white hover:bg-gray-50/50'
+                  }`}
+                >
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-xl select-none">{styleOption.emoji}</span>
+                      <div className="flex items-center gap-1">
+                        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-md bg-amber-100/70 text-amber-800">
+                          {styleOption.badge}
+                        </span>
+                        {isSelected && (
+                          <span className="w-4 h-4 rounded-full bg-amber-600 text-white flex items-center justify-center">
+                            <Check className="w-2.5 h-2.5" />
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="font-bold text-xs text-gray-900 leading-tight">
+                      {styleOption.name}
+                    </div>
+                    <div className="text-[10px] text-amber-900 font-medium mt-0.5 leading-snug">
+                      {styleOption.tagline}
+                    </div>
+                    <p className="text-[10px] text-gray-500 leading-tight mt-1 line-clamp-2">
+                      {styleOption.description}
+                    </p>
+                  </div>
+                  <div className="mt-2 pt-1.5 border-t border-gray-100 text-[9px] text-gray-400 font-medium">
+                    {styleOption.bestFor}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Active Art Style Directive Preview */}
+          <div className="mt-2.5 p-2.5 rounded-xl bg-amber-50/60 border border-amber-200/80 flex items-start gap-2 text-xs">
+            <span className="text-amber-700 font-bold text-sm leading-none select-none">🎨</span>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="font-bold text-[11px] uppercase tracking-wider text-amber-900">
+                  Active Art Style Directive:
+                </span>
+                <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-200 text-amber-900 font-bold">
+                  {getArtStyleDefinition(artStyle).name}
+                </span>
+              </div>
+              <p className="text-amber-950 font-mono text-[11px] mt-1 leading-snug">
+                {getArtStyleDefinition(artStyle).promptDirective}
               </p>
             </div>
           </div>

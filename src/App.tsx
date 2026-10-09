@@ -15,6 +15,7 @@ import { BatchRegenerateModal } from './components/BatchRegenerateModal';
 import { BrandIntegrationModal } from './components/BrandIntegrationModal';
 import { WebsiteIntegrationsModal } from './components/WebsiteIntegrationsModal';
 import { BonusActivitiesModal } from './components/BonusActivitiesModal';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import {
   ColoringBook,
   ColoringPage,
@@ -28,6 +29,7 @@ import {
   PageBorderStyle,
   PlacedSticker,
   BrandIntegration,
+  ArtStyle,
 } from './types';
 import { DEFAULT_COLORING_BOOK, createSampleLineArtSvg, createSampleStickersSvg } from './utils/sampleData';
 import { createThematicCoverSvg, buildThematicCoverAiPrompt } from './utils/coverIllustrationGenerator';
@@ -117,11 +119,13 @@ export default function App() {
   useEffect(() => {
     let isMounted = true;
 
-    const checkSaved = () => {
+    const checkSaved = (isInitial = false) => {
       const saved = getAutosavedSession();
       if (saved && saved.book && Array.isArray(saved.book.pages) && saved.book.pages.length > 0) {
         setAutosavedSession(saved);
-        setShowRestoreBanner(true);
+        if (isInitial) {
+          setShowRestoreBanner(true);
+        }
       }
       const history = getSessionHistory();
       if (history.length > 0) {
@@ -136,7 +140,7 @@ export default function App() {
     storageReady()
       .then(() => {
         if (isMounted) {
-          checkSaved();
+          checkSaved(true);
         }
       })
       .catch((err) => {
@@ -152,13 +156,16 @@ export default function App() {
       }
     };
 
-    window.addEventListener('coloring_book_storage_ready', checkSaved);
-    window.addEventListener('coloring_book_autosave_updated', checkSaved);
+    const handleStorageReady = () => checkSaved(true);
+    const handleAutosaveUpdated = () => checkSaved(false);
+
+    window.addEventListener('coloring_book_storage_ready', handleStorageReady);
+    window.addEventListener('coloring_book_autosave_updated', handleAutosaveUpdated);
     window.addEventListener('coloring_book_session_history_updated', handleHistoryUpdate);
     return () => {
       isMounted = false;
-      window.removeEventListener('coloring_book_storage_ready', checkSaved);
-      window.removeEventListener('coloring_book_autosave_updated', checkSaved);
+      window.removeEventListener('coloring_book_storage_ready', handleStorageReady);
+      window.removeEventListener('coloring_book_autosave_updated', handleAutosaveUpdated);
       window.removeEventListener('coloring_book_session_history_updated', handleHistoryUpdate);
     };
   }, []);
@@ -204,6 +211,7 @@ export default function App() {
     pageCount?: number;
     difficulty?: ColoringDifficulty;
     activityMode?: ActivityMode;
+    artStyle?: ArtStyle;
     secondaryLanguage?: BookLanguage;
     resolution: ImageResolution;
     aspectRatio: AspectRatio;
@@ -212,6 +220,7 @@ export default function App() {
     const targetPageCount = Math.max(1, Math.min(12, options.pageCount || 5));
     const targetDifficulty: ColoringDifficulty = options.difficulty || 'standard';
     const targetActivityMode: ActivityMode = options.activityMode || 'standard';
+    const targetArtStyle: ArtStyle = options.artStyle || 'classic';
     const targetSecondaryLang: BookLanguage | undefined = options.secondaryLanguage;
     const explicitTitle = options.customTitle?.trim() || '';
     const cleanAuthor = options.dedicationAuthor?.trim() || '';
@@ -242,6 +251,7 @@ export default function App() {
             pageCount: targetPageCount,
             difficulty: targetDifficulty,
             activityMode: targetActivityMode,
+            artStyle: targetArtStyle,
             secondaryLanguage: targetSecondaryLang || undefined,
             userNotes: options.userNotes,
           }),
@@ -338,7 +348,8 @@ export default function App() {
         const coverPrompt = buildThematicCoverAiPrompt(
           options.theme,
           options.childName,
-          targetDifficulty
+          targetDifficulty,
+          targetArtStyle
         );
 
         planData = {
@@ -363,6 +374,7 @@ export default function App() {
         secondaryCaption: p.secondaryCaption || (targetSecondaryLang ? `Coloring scene ${idx + 1}` : undefined),
         secondaryLanguage: targetSecondaryLang,
         funFactOrTip: p.funFactOrTip || `Coloring tip: Try using your favorite bright colors here!`,
+        artStyle: targetArtStyle,
         prompt: p.imagePrompt || `Children's coloring book page of ${options.theme}`,
         status: 'generating',
         resolution: options.resolution,
@@ -376,6 +388,7 @@ export default function App() {
         childName: options.childName,
         difficulty: targetDifficulty,
         activityMode: targetActivityMode,
+        artStyle: targetArtStyle,
         language: 'en',
         secondaryLanguage: targetSecondaryLang,
         dedicationAuthor: cleanAuthor || undefined,
@@ -418,6 +431,7 @@ export default function App() {
             imageSize: options.resolution,
             aspectRatio: options.aspectRatio,
             difficulty: targetDifficulty,
+            artStyle: targetArtStyle,
           }),
         });
         const coverData = await coverRes.json();
@@ -460,6 +474,7 @@ export default function App() {
               imageSize: options.resolution,
               aspectRatio: options.aspectRatio,
               difficulty: targetDifficulty,
+              artStyle: targetArtStyle,
             }),
           });
           const imgData = await imgRes.json();
@@ -516,7 +531,7 @@ export default function App() {
   };
 
   // Regenerate a single page
-  const handleRegeneratePage = async (pageId: string, customPrompt?: string, resolution?: ImageResolution) => {
+  const handleRegeneratePage = async (pageId: string, customPrompt?: string, resolution?: ImageResolution, customArtStyle?: ArtStyle) => {
     const pageToRegen = book.pages.find((p) => p.id === pageId);
     if (!pageToRegen) return;
 
@@ -539,6 +554,7 @@ export default function App() {
           imageSize: resolution || pageToRegen.resolution || book.resolution,
           aspectRatio: book.aspectRatio,
           difficulty: book.difficulty || 'standard',
+          artStyle: customArtStyle || pageToRegen.artStyle || book.artStyle || 'classic',
         }),
       });
 
@@ -548,7 +564,14 @@ export default function App() {
           ...prev,
           pages: prev.pages.map((p) =>
             p.id === pageId
-              ? { ...p, imageUrl: data.imageUrl, status: 'completed', errorMessage: undefined, resolution: resolution || p.resolution }
+              ? {
+                  ...p,
+                  imageUrl: data.imageUrl,
+                  status: 'completed',
+                  errorMessage: undefined,
+                  resolution: resolution || p.resolution,
+                  artStyle: customArtStyle || p.artStyle,
+                }
               : p
           ),
         }));
@@ -600,10 +623,11 @@ export default function App() {
         body: JSON.stringify({
           theme: book.theme,
           childName: book.childName,
-          prompt: book.coverPrompt || buildThematicCoverAiPrompt(book.theme, book.childName, book.difficulty || 'standard'),
+          prompt: book.coverPrompt || buildThematicCoverAiPrompt(book.theme, book.childName, book.difficulty || 'standard', book.artStyle || 'classic'),
           imageSize: book.resolution,
           aspectRatio: book.aspectRatio,
           difficulty: book.difficulty || 'standard',
+          artStyle: book.artStyle || 'classic',
         }),
       });
       const data = await res.json();
@@ -834,8 +858,9 @@ export default function App() {
   };
 
   // Batch regenerate all pages in book with single click
-  const handleBatchRegenerateAll = async (newTheme?: string, refreshPlan: boolean = true) => {
+  const handleBatchRegenerateAll = async (newTheme?: string, refreshPlan: boolean = true, newArtStyle?: ArtStyle) => {
     const targetTheme = newTheme?.trim() || book.theme;
+    const targetArtStyle: ArtStyle = newArtStyle || book.artStyle || 'classic';
     setIsBatchGenerating(true);
     const total = book.pages.length;
 
@@ -844,7 +869,7 @@ export default function App() {
       let pageTitles = book.pages.map((p) => p.title);
 
       // If new theme is provided and refreshPlan is true, request new storyboard scene plan
-      if (refreshPlan && targetTheme !== book.theme) {
+      if (refreshPlan && (targetTheme !== book.theme || (newArtStyle && newArtStyle !== book.artStyle))) {
         setBatchProgress({
           current: 0,
           total,
@@ -865,6 +890,7 @@ export default function App() {
               pageCount: total,
               difficulty: book.difficulty || 'standard',
               activityMode: book.activityMode || 'standard',
+              artStyle: targetArtStyle,
               language: book.language || 'en',
               secondaryLanguage: book.secondaryLanguage,
             }),
@@ -878,6 +904,7 @@ export default function App() {
             setBook((prev) => ({
               ...prev,
               theme: targetTheme,
+              artStyle: targetArtStyle,
               title: planData.plan?.bookTitle || planData.bookTitle || `${prev.childName}'s ${targetTheme} Coloring Book`,
               subtitle: planData.plan?.subtitle || planData.subtitle || prev.subtitle,
               coverPrompt: planData.plan?.coverPrompt || planData.coverPrompt || prev.coverPrompt,
@@ -887,6 +914,7 @@ export default function App() {
                 storyCaption: rawPages[idx]?.storyCaption || p.storyCaption,
                 secondaryCaption: rawPages[idx]?.secondaryCaption || p.secondaryCaption,
                 prompt: rawPages[idx]?.imagePrompt || p.prompt,
+                artStyle: targetArtStyle,
                 status: 'generating',
               })),
             }));
@@ -928,6 +956,7 @@ export default function App() {
               imageSize: page.resolution || book.resolution,
               aspectRatio: book.aspectRatio,
               difficulty: book.difficulty || 'standard',
+              artStyle: targetArtStyle,
             }),
           });
           const data = await res.json();
@@ -1236,6 +1265,7 @@ export default function App() {
           initialPageCount={book.pages.length}
           initialDifficulty={book.difficulty || 'standard'}
           initialActivityMode={book.activityMode || 'standard'}
+          initialArtStyle={book.artStyle || 'classic'}
           initialDedicationAuthor={book.dedicationAuthor || ''}
           initialResolution={book.resolution}
           initialAspectRatio={book.aspectRatio}
@@ -1258,52 +1288,54 @@ export default function App() {
         />
 
         {/* Coloring Book View: Custom Cover + Distinct Coloring Pages + Filmstrip Navigation */}
-        <ColoringBookView
-          book={book}
-          onRegeneratePage={handleRegeneratePage}
-          onRegenerateCover={handleRegenerateCover}
-          onRegenerateStickers={handleRegenerateStickers}
-          onEditPage={(page) => setEditingPage(page)}
-          onPrintSinglePage={handlePrintSinglePage}
-          onPrintStickerSheet={handlePrintStickerSheet}
-          onLoadFavorite={handleLoadFavorite}
-          onOpenPrintPreview={() => setIsPrintPreviewOpen(true)}
-          onOpenPageReorder={() => setIsPageReorderOpen(true)}
-          onOpenBatchRegenerate={() => setIsBatchModalOpen(true)}
-          onUpdatePageBorder={handleUpdatePageBorder}
-          onUpdateAllBorders={handleUpdateAllBorders}
-          onSavePageArtwork={handleSavePageArtwork}
-          onSaveVoiceAudio={handleSaveVoiceAudio}
-          onAddHeroPage={handleAddHeroPage}
-          onToggleQrCode={handleToggleQrCode}
-          onUpdateCertificate={handleUpdateCertificate}
-          onDownloadPdf={() => {
-            setIsPdfBtnTooltipVisible(false);
-            if (isPreparingBottomPdf) return;
-            setIsPreparingBottomPdf(true);
-            setPdfPrepProgress(15);
-            playChimeSound('sparkle');
+        <ErrorBoundary fallbackTitle="Coloring Book Viewer">
+          <ColoringBookView
+            book={book}
+            onRegeneratePage={handleRegeneratePage}
+            onRegenerateCover={handleRegenerateCover}
+            onRegenerateStickers={handleRegenerateStickers}
+            onEditPage={(page) => setEditingPage(page)}
+            onPrintSinglePage={handlePrintSinglePage}
+            onPrintStickerSheet={handlePrintStickerSheet}
+            onLoadFavorite={handleLoadFavorite}
+            onOpenPrintPreview={() => setIsPrintPreviewOpen(true)}
+            onOpenPageReorder={() => setIsPageReorderOpen(true)}
+            onOpenBatchRegenerate={() => setIsBatchModalOpen(true)}
+            onUpdatePageBorder={handleUpdatePageBorder}
+            onUpdateAllBorders={handleUpdateAllBorders}
+            onSavePageArtwork={handleSavePageArtwork}
+            onSaveVoiceAudio={handleSaveVoiceAudio}
+            onAddHeroPage={handleAddHeroPage}
+            onToggleQrCode={handleToggleQrCode}
+            onUpdateCertificate={handleUpdateCertificate}
+            onDownloadPdf={() => {
+              setIsPdfBtnTooltipVisible(false);
+              if (isPreparingBottomPdf) return;
+              setIsPreparingBottomPdf(true);
+              setPdfPrepProgress(15);
+              playChimeSound('sparkle');
 
-            // Dynamically step through progress ring while preparing PDF
-            setTimeout(() => setPdfPrepProgress(45), 200);
-            setTimeout(() => setPdfPrepProgress(78), 450);
-            setTimeout(() => setPdfPrepProgress(100), 700);
-            setTimeout(() => {
-              setIsPreparingBottomPdf(false);
-              setPdfPrepProgress(0);
-              setIsPdfModalOpen(true);
-            }, 920);
-          }}
-          isPreparingPdf={isPreparingBottomPdf}
-          pdfProgress={pdfPrepProgress}
-          isPdfBtnTooltipVisible={isPdfBtnTooltipVisible}
-          setIsPdfBtnTooltipVisible={setIsPdfBtnTooltipVisible}
-          isBookGenerationFinished={isBookGenerationFinished}
-          isGeneratingBook={isGeneratingBook}
-          onOpenBrandModal={() => setIsBrandModalOpen(true)}
-          onOpenWebsiteModal={() => setIsWebsiteModalOpen(true)}
-          onOpenActivitiesModal={() => setIsActivitiesModalOpen(true)}
-        />
+              // Dynamically step through progress ring while preparing PDF
+              setTimeout(() => setPdfPrepProgress(45), 200);
+              setTimeout(() => setPdfPrepProgress(78), 450);
+              setTimeout(() => setPdfPrepProgress(100), 700);
+              setTimeout(() => {
+                setIsPreparingBottomPdf(false);
+                setPdfPrepProgress(0);
+                setIsPdfModalOpen(true);
+              }, 920);
+            }}
+            isPreparingPdf={isPreparingBottomPdf}
+            pdfProgress={pdfPrepProgress}
+            isPdfBtnTooltipVisible={isPdfBtnTooltipVisible}
+            setIsPdfBtnTooltipVisible={setIsPdfBtnTooltipVisible}
+            isBookGenerationFinished={isBookGenerationFinished}
+            isGeneratingBook={isGeneratingBook}
+            onOpenBrandModal={() => setIsBrandModalOpen(true)}
+            onOpenWebsiteModal={() => setIsWebsiteModalOpen(true)}
+            onOpenActivitiesModal={() => setIsActivitiesModalOpen(true)}
+          />
+        </ErrorBoundary>
       </main>
 
       {/* Multi-turn Chat Assistant Drawer */}
@@ -1334,7 +1366,8 @@ export default function App() {
       <BrandIntegrationModal
         isOpen={isBrandModalOpen}
         onClose={() => setIsBrandModalOpen(false)}
-        brand={book.brandIntegration}
+        brandIntegration={book.brandIntegration}
+        childName={book.childName}
         onSave={handleSaveBrandIntegration}
       />
 
@@ -1371,9 +1404,10 @@ export default function App() {
         }}
         currentTheme={book.theme}
         childName={book.childName}
-        totalPages={book.pages.length}
-        isGenerating={isBatchGenerating}
-        progress={batchProgress}
+        pageCount={book.pages.length}
+        currentArtStyle={book.artStyle}
+        isBatchGenerating={isBatchGenerating}
+        batchProgress={batchProgress}
         onBatchRegenerate={handleBatchRegenerateAll}
       />
 
