@@ -33,7 +33,7 @@ import { KidStoryBuilder } from './KidStoryBuilder';
 import { playChimeSound } from '../utils/kidAudio';
 import { validateKidContent, sanitizeInput } from '../utils/security';
 import { ParentalConsentModal } from './ParentalConsentModal';
-import { getParentalConsentSync } from '../utils/dbStorage';
+import { getParentalConsentRecordSync } from '../utils/dbStorage';
 import { getClientSessionId } from '../utils/session';
 
 export interface InspirationTheme {
@@ -125,15 +125,22 @@ export const BookForm: React.FC<BookFormProps> = ({
     aspectRatio: AspectRatio;
     userNotes?: string;
   } | null>(null);
-  const [hasConsent, setHasConsent] = useState(() => getParentalConsentSync());
+  const [consentRecord, setConsentRecord] = useState(() => getParentalConsentRecordSync());
 
   useEffect(() => {
     const handleConsentChange = () => {
-      setHasConsent(getParentalConsentSync());
+      setConsentRecord(getParentalConsentRecordSync());
     };
     window.addEventListener('parental_consent_updated', handleConsentChange);
     return () => window.removeEventListener('parental_consent_updated', handleConsentChange);
   }, []);
+
+  const cleanChildInput = childName.trim().toLowerCase();
+  const hasConsentForChild = Boolean(
+    consentRecord?.granted &&
+    consentRecord?.consentToken &&
+    consentRecord?.childName?.trim().toLowerCase() === cleanChildInput
+  );
 
   const handleGetInspiration = async () => {
     setIsLoadingInspiration(true);
@@ -242,7 +249,7 @@ export const BookForm: React.FC<BookFormProps> = ({
     };
 
     // Mandatory Parental Consent check before submitting child data
-    if (!getParentalConsentSync()) {
+    if (!hasConsentForChild) {
       setPendingSubmission(submissionData);
       setShowConsentModal(true);
       return;
@@ -252,7 +259,7 @@ export const BookForm: React.FC<BookFormProps> = ({
   };
 
   const handleConsentConfirmed = () => {
-    setHasConsent(true);
+    setConsentRecord(getParentalConsentRecordSync());
     if (pendingSubmission) {
       onGenerateBook(pendingSubmission);
       setPendingSubmission(null);
@@ -306,14 +313,14 @@ export const BookForm: React.FC<BookFormProps> = ({
                   type="button"
                   onClick={() => setShowConsentModal(true)}
                   className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold border transition-colors cursor-pointer ${
-                    hasConsent
+                    hasConsentForChild
                       ? 'bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100'
                       : 'bg-amber-50 text-amber-900 border-amber-200 hover:bg-amber-100'
                   }`}
                   title="View parental consent and child privacy details"
                 >
-                  <ShieldCheck className={`w-3 h-3 ${hasConsent ? 'text-emerald-600' : 'text-amber-600'}`} />
-                  <span>{hasConsent ? 'Parental Consent Verified' : 'Parental Consent Required'}</span>
+                  <ShieldCheck className={`w-3 h-3 ${hasConsentForChild ? 'text-emerald-600' : 'text-amber-600'}`} />
+                  <span>{hasConsentForChild ? `Consent Recorded for "${cleanChildInput || 'Child'}"` : 'Parental Consent Required'}</span>
                 </button>
               </div>
               <button

@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   X,
   Upload,
@@ -12,14 +12,16 @@ import {
   Dog,
   Smile,
   ShieldAlert,
+  ShieldCheck,
+  Lock,
 } from 'lucide-react';
 import { convertPhotoToLineArt } from '../utils/photoToLineArtFilter';
 import { playChimeSound } from '../utils/kidAudio';
 import { resizeAndCompressImage } from '../utils/imageCompressor';
 import { sanitizeInput } from '../utils/security';
 import { ParentalConsentModal } from './ParentalConsentModal';
-import { getParentalConsentSync, getParentalConsentRecordAsync } from '../utils/dbStorage';
-import { getClientSessionId } from '../utils/session';
+import { getParentalConsentRecordAsync } from '../utils/dbStorage';
+import { getClientSessionId, initServerSession } from '../utils/session';
 
 interface PersonalizedHeroModalProps {
   isOpen: boolean;
@@ -50,17 +52,54 @@ export function PersonalizedHeroModal({
   const [strokeWeight, setStrokeWeight] = useState<'bold' | 'extra-bold'>('bold');
   const [asCover, setAsCover] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [hasParentalConsent, setHasParentalConsent] = useState(() => getParentalConsentSync());
+  const [recordedConsent, setRecordedConsent] = useState<{
+    childName: string;
+    token: string;
+  } | null>(null);
   const [showConsentModal, setShowConsentModal] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Synchronize and verify recorded consent flow specifically for this child
+  useEffect(() => {
+    let isCancelled = false;
+    async function checkConsent() {
+      const record = await getParentalConsentRecordAsync();
+      if (!isCancelled) {
+        const cleanName = (heroName || '').trim().toLowerCase();
+        if (
+          record?.granted &&
+          record?.consentToken &&
+          record?.childName?.trim().toLowerCase() === cleanName
+        ) {
+          setRecordedConsent({
+            childName: record.childName.trim(),
+            token: record.consentToken,
+          });
+        } else {
+          setRecordedConsent(null);
+        }
+      }
+    }
+    checkConsent();
+    return () => {
+      isCancelled = true;
+    };
+  }, [heroName]);
+
   if (!isOpen) return null;
+
+  const cleanHeroName = sanitizeInput(heroName, 40) || 'Hero';
+  const hasChildConsent = Boolean(
+    recordedConsent &&
+      recordedConsent.childName.trim().toLowerCase() === cleanHeroName.trim().toLowerCase() &&
+      recordedConsent.token
+  );
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    if (!hasParentalConsent) {
+    if (!hasChildConsent) {
       setShowConsentModal(true);
       return;
     }
@@ -102,47 +141,34 @@ export function PersonalizedHeroModal({
 
   const handleGenerateAiArt = async () => {
     if (!photoPreview) return;
-    if (!hasParentalConsent) {
-      setErrorMsg('Parental consent is required before using AI photo processing.');
+    const currentHeroName = sanitizeInput(heroName, 40) || 'Hero';
+
+    const token = recordedConsent?.token;
+    const isNameMatching =
+      recordedConsent?.childName?.trim().toLowerCase() === currentHeroName.trim().toLowerCase();
+
+    // STRICT COPPA COMPLIANCE:
+    // Require explicit consent flow for this specific child.
+    // NEVER silently issue a new consent token for a different child.
+    if (!token || !isNameMatching) {
+      setErrorMsg(`Explicit parental consent must be recorded for "${currentHeroName}" before processing photos.`);
+      setShowConsentModal(true);
       return;
     }
-    const cleanHeroName = sanitizeInput(heroName, 40) || 'Hero';
+
     setIsGeneratingAi(true);
     setErrorMsg(null);
     playChimeSound('sparkle');
 
     try {
-      const sessionId = getClientSessionId();
-      const consentRecord = await getParentalConsentRecordAsync();
-      const isNameMatching =
-        consentRecord?.childName?.trim().toLowerCase() === cleanHeroName.trim().toLowerCase();
-      let token = isNameMatching ? consentRecord?.consentToken : undefined;
-      if (!token) {
+      let sessionId = getClientSessionId();
+      if (!sessionId || !sessionId.includes('.')) {
         try {
-          const tokenRes = await fetch('/api/verify-parental-consent', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'X-Session-ID': sessionId,
-            },
-            body: JSON.stringify({
-              guardianRole: consentRecord?.guardianType || 'parent',
-              childName: cleanHeroName,
-              sessionId,
-              coppaConfirmed: true,
-            }),
-          });
-          const tokenData = await tokenRes.json();
-          if (tokenData.success && tokenData.consentToken) {
-            token = tokenData.consentToken;
-          }
-        } catch (tErr) {
-          console.warn('Could not auto-fetch consent token:', tErr);
-        }
+          sessionId = await initServerSession();
+        } catch {}
       }
-
-      if (!token) {
-        throw new Error('Valid parental consent verification token is required under COPPA.');
+      if (!sessionId || !sessionId.trim()) {
+        throw new Error('A valid active browser session ID is required.');
       }
 
       const res = await fetch('/api/photo-to-line-art', {
@@ -155,7 +181,7 @@ export function PersonalizedHeroModal({
         body: JSON.stringify({
           photoBase64: photoPreview,
           subjectType,
-          childName: cleanHeroName,
+          childName: currentHeroName,
           theme: sanitizeInput(theme, 50),
           sceneSetting: `celebrating an epic ${theme} adventure with friendly companion characters`,
           difficulty: 'standard',
@@ -292,31 +318,49 @@ export function PersonalizedHeroModal({
             </label>
 
             {/* Parental Consent & Privacy Protection Gate */}
-            <div className="mb-3 p-3 bg-amber-50/80 border border-amber-200 rounded-xl">
-              <div className="flex items-start gap-2">
-                <ShieldAlert className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
-                <div>
-                  <h5 className="text-xs font-bold text-amber-950">Child Privacy & Safety Notice</h5>
-                  <p className="text-[11px] text-amber-900 leading-relaxed mt-0.5">
-                    Photos are processed in-memory solely to generate black-and-white coloring outlines. We never store, index, or share personal photos of children.
-                  </p>
+            {hasChildConsent ? (
+              <div className="mb-3 p-3 bg-emerald-50/90 border border-emerald-300 rounded-xl">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex items-start gap-2">
+                    <ShieldCheck className="w-4 h-4 text-emerald-700 shrink-0 mt-0.5" />
+                    <div>
+                      <h5 className="text-xs font-bold text-emerald-950">Parental Consent Recorded for &quot;{cleanHeroName}&quot;</h5>
+                      <p className="text-[11px] text-emerald-900 leading-relaxed mt-0.5">
+                        Explicit parental consent flow is recorded for this child and session under COPPA guidelines.
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowConsentModal(true)}
+                    className="text-[11px] font-semibold text-emerald-800 underline hover:text-emerald-950 shrink-0 cursor-pointer"
+                  >
+                    Review Consent
+                  </button>
                 </div>
               </div>
-              <label className="flex items-center gap-2 cursor-pointer mt-2 pt-2 border-t border-amber-200/60 select-none">
-                <input
-                  type="checkbox"
-                  checked={hasParentalConsent}
-                  onChange={(e) => {
-                    setHasParentalConsent(e.target.checked);
-                    if (e.target.checked) setErrorMsg(null);
-                  }}
-                  className="rounded text-amber-600 focus:ring-amber-500 w-4 h-4 cursor-pointer"
-                />
-                <span className="text-xs font-bold text-amber-950">
-                  I am a parent or legal guardian (18+) and consent to processing this photo for this coloring book
-                </span>
-              </label>
-            </div>
+            ) : (
+              <div className="mb-3 p-3 bg-amber-50/90 border border-amber-300 rounded-xl">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex items-start gap-2">
+                    <ShieldAlert className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+                    <div>
+                      <h5 className="text-xs font-bold text-amber-950">Explicit Parental Consent Required for &quot;{cleanHeroName}&quot;</h5>
+                      <p className="text-[11px] text-amber-900 leading-relaxed mt-0.5">
+                        COPPA policy requires explicit consent recorded separately for each child before processing photos.
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowConsentModal(true)}
+                    className="px-2.5 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-[11px] font-bold shadow-2xs shrink-0 cursor-pointer transition-colors"
+                  >
+                    Record Consent
+                  </button>
+                </div>
+              </div>
+            )}
 
             <input
               type="file"
@@ -329,25 +373,25 @@ export function PersonalizedHeroModal({
             {!photoPreview ? (
               <div
                 onClick={() => {
-                  if (!hasParentalConsent) {
+                  if (!hasChildConsent) {
                     setShowConsentModal(true);
                     return;
                   }
                   fileInputRef.current?.click();
                 }}
                 className={`border-2 border-dashed rounded-2xl p-8 flex flex-col items-center justify-center transition-colors group cursor-pointer ${
-                  hasParentalConsent
+                  hasChildConsent
                     ? 'border-amber-300 hover:border-amber-500 bg-amber-50/50 hover:bg-amber-50'
                     : 'border-gray-200 bg-gray-50/60 hover:bg-amber-50/30'
                 }`}
               >
                 <div className={`w-14 h-14 rounded-full flex items-center justify-center mb-3 transition-transform group-hover:scale-110 ${
-                  hasParentalConsent ? 'bg-amber-100 text-amber-600' : 'bg-gray-200 text-gray-500'
+                  hasChildConsent ? 'bg-amber-100 text-amber-600' : 'bg-gray-200 text-gray-500'
                 }`}>
                   <Camera className="w-7 h-7" />
                 </div>
                 <p className="text-sm font-bold text-gray-800">
-                  {hasParentalConsent ? 'Click or drag & drop a photo here' : 'Parental consent required to upload child photo'}
+                  {hasChildConsent ? 'Click or drag & drop a photo here' : `Parental consent required to upload photo for "${cleanHeroName}"`}
                 </p>
                 <p className="text-xs text-gray-500 mt-1">Supports PNG, JPG, or WEBP photos (automatically compressed)</p>
               </div>
@@ -478,15 +522,22 @@ export function PersonalizedHeroModal({
       <ParentalConsentModal
         isOpen={showConsentModal}
         onClose={() => setShowConsentModal(false)}
-        onConsentGiven={() => {
-          setHasParentalConsent(true);
+        onConsentGiven={(token) => {
+          if (token) {
+            setRecordedConsent({
+              childName: cleanHeroName,
+              token,
+            });
+          }
           setErrorMsg(null);
-          // Auto-trigger file upload
-          setTimeout(() => {
-            fileInputRef.current?.click();
-          }, 150);
+          // Auto-trigger file upload if no photo chosen yet
+          if (!photoPreview) {
+            setTimeout(() => {
+              fileInputRef.current?.click();
+            }, 150);
+          }
         }}
-        childName={heroName?.trim() || 'Hero'}
+        childName={cleanHeroName}
         hasPhoto={true}
         actionTitle="Upload Child Photo"
       />

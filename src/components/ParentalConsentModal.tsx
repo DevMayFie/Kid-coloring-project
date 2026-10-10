@@ -12,12 +12,12 @@ import {
 } from 'lucide-react';
 import { saveParentalConsentAsync } from '../utils/dbStorage';
 import { playChimeSound } from '../utils/kidAudio';
-import { getClientSessionId } from '../utils/session';
+import { getClientSessionId, initServerSession } from '../utils/session';
 
 export interface ParentalConsentModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onConsentGiven: () => void;
+  onConsentGiven: (token?: string) => void;
   childName?: string;
   hasPhoto?: boolean;
   actionTitle?: string;
@@ -46,7 +46,15 @@ export const ParentalConsentModal: React.FC<ParentalConsentModalProps> = ({
     setErrorMessage(null);
 
     try {
-      const sessionId = getClientSessionId();
+      let sessionId = getClientSessionId();
+      if (!sessionId || !sessionId.includes('.')) {
+        try {
+          sessionId = await initServerSession();
+        } catch {}
+      }
+      if (!sessionId || !sessionId.trim()) {
+        throw new Error('A valid active browser session is required to record parental consent.');
+      }
       const activeChildName = childName?.trim() || 'Hero';
       const res = await fetch('/api/verify-parental-consent', {
         method: 'POST',
@@ -64,12 +72,12 @@ export const ParentalConsentModal: React.FC<ParentalConsentModalProps> = ({
 
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.error || `Parental verification rejected by server (Status ${res.status}).`);
+        throw new Error(errData.error || `Parental consent recording rejected by server (Status ${res.status}).`);
       }
 
       const data = await res.json();
       if (!data.success || !data.consentToken) {
-        throw new Error(data.error || 'Server failed to issue cryptographic parental consent token.');
+        throw new Error(data.error || 'Server failed to issue signed parental consent evidence token.');
       }
 
       const serverToken = data.consentToken;
@@ -81,13 +89,13 @@ export const ParentalConsentModal: React.FC<ParentalConsentModalProps> = ({
       });
 
       playChimeSound('sparkle');
-      onConsentGiven();
+      onConsentGiven(serverToken);
       onClose();
     } catch (err: any) {
-      console.error('Parental consent verification rejected:', err);
-      // STRICT COPPA SECURITY: Consent is NOT granted when verification fails
+      console.error('Parental consent recording rejected:', err);
+      // STRICT COPPA SECURITY: Consent is NOT granted when recording fails
       setErrorMessage(
-        err.message || 'Verification could not be confirmed with the server. Parental consent was not granted. Please try again.'
+        err.message || 'Consent could not be recorded with the server. Parental consent was not granted. Please try again.'
       );
     } finally {
       setIsSubmitting(false);

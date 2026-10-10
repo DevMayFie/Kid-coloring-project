@@ -34,6 +34,15 @@ let cachedConsent: ParentalConsentRecord | null = null;
 let isInitialized = false;
 let initPromise: Promise<void> | null = null;
 
+// Mutex queue to serialize write operations and prevent read-modify-write race conditions
+let writeQueue: Promise<any> = Promise.resolve();
+
+function enqueueWrite<T>(op: () => Promise<T>): Promise<T> {
+  const result = writeQueue.then(op, op);
+  writeQueue = result.catch(() => {});
+  return result;
+}
+
 /**
  * Ensures storage initialization has fully resolved before executing reads/writes.
  */
@@ -55,8 +64,7 @@ export function isStorageHydrated(): boolean {
  * Initialize storage from IndexedDB on startup and migrate legacy localStorage if found.
  */
 export async function initStorage(): Promise<void> {
-  if (isInitialized) return;
-  isInitialized = true;
+  if (initPromise && isInitialized) return initPromise;
 
   try {
     // 1. Load Autosaved Session from IndexedDB
@@ -144,6 +152,9 @@ export async function initStorage(): Promise<void> {
       } catch (e) {}
     }
 
+    // Mark hydration as fully completed ONLY after all records are loaded
+    isInitialized = true;
+
     // Broadcast initialization complete
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('coloring_book_storage_ready'));
@@ -168,6 +179,7 @@ export async function initStorage(): Promise<void> {
     }
   } catch (err) {
     console.warn('IndexedDB initialization encountered an issue, fallback to memory cache:', err);
+    isInitialized = true;
   }
 }
 
@@ -182,20 +194,23 @@ if (typeof window !== 'undefined') {
 
 export async function saveAutosaveToDb(book: ColoringBook, savedAt = Date.now()): Promise<boolean> {
   if (!book || !book.id) return false;
+  await storageReady();
 
-  const session = { book, savedAt };
-  cachedAutosave = session;
+  return enqueueWrite(async () => {
+    const session = { book, savedAt };
+    cachedAutosave = session;
 
-  try {
-    await set(KEY_AUTOSAVE, session, bookStore);
-    if (typeof window !== 'undefined') {
-      window.dispatchEvent(new CustomEvent('coloring_book_autosave_updated', { detail: session }));
+    try {
+      await set(KEY_AUTOSAVE, session, bookStore);
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('coloring_book_autosave_updated', { detail: session }));
+      }
+      return true;
+    } catch (err) {
+      console.warn('Persistent IndexedDB autosave failed (held in memory cache):', err);
+      return false;
     }
-    return true;
-  } catch (err) {
-    console.warn('Persistent IndexedDB autosave failed (held in memory cache):', err);
-    return false;
-  }
+  });
 }
 
 export function getAutosavedSessionSync(): { book: ColoringBook; savedAt: number } | null {
@@ -203,6 +218,7 @@ export function getAutosavedSessionSync(): { book: ColoringBook; savedAt: number
 }
 
 export async function getAutosavedSessionAsync(): Promise<{ book: ColoringBook; savedAt: number } | null> {
+  await storageReady();
   try {
     const data = await get<{ book: ColoringBook; savedAt: number }>(KEY_AUTOSAVE, bookStore);
     if (data && data.book) {
@@ -216,74 +232,81 @@ export async function getAutosavedSessionAsync(): Promise<{ book: ColoringBook; 
 }
 
 export async function clearAutosaveInDb(): Promise<void> {
-  cachedAutosave = null;
-  try {
-    await del(KEY_AUTOSAVE, bookStore);
-    if (typeof window !== 'undefined') {
-      window.dispatchEvent(new CustomEvent('coloring_book_autosave_cleared'));
+  await storageReady();
+  return enqueueWrite(async () => {
+    cachedAutosave = null;
+    try {
+      await del(KEY_AUTOSAVE, bookStore);
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('coloring_book_autosave_cleared'));
+      }
+    } catch (err) {
+      console.warn('Error clearing autosave in IndexedDB:', err);
     }
-  } catch (err) {
-    console.warn('Error clearing autosave in IndexedDB:', err);
-  }
+  });
 }
 
 /* ================= FAVORITES OPERATIONS (INDEXEDDB) ================= */
 
 export async function saveFavoriteToDb(book: ColoringBook | FavoriteBook): Promise<FavoriteBook> {
-  const currentFavs = [...cachedFavorites];
-  const existingIdx = currentFavs.findIndex(
-    (fav) => fav.id === book.id || (fav.theme === book.theme && fav.childName === book.childName)
-  );
+  await storageReady();
 
-  const favoriteItem: FavoriteBook = {
-    id: book.id || `fav-${Date.now()}`,
-    savedAt: Date.now(),
-    theme: book.theme,
-    childName: book.childName,
-    title: book.title,
-    subtitle: book.subtitle,
-    dedication: book.dedication,
-    difficulty: book.difficulty,
-    resolution: book.resolution,
-    aspectRatio: book.aspectRatio,
-    pageCount: (book as any).pages?.length || (book as any).pageCount || 5,
-    coverImageUrl: book.coverImageUrl,
-    pages: (book as any).pages || [],
-    stickerSheet: book.stickerSheet,
-    defaultBorderStyle: book.defaultBorderStyle,
-    includeCertificate: book.includeCertificate,
-    certificateDetails: book.certificateDetails,
-    includeQrCode: book.includeQrCode,
-    includeDrawYourEnding: book.includeDrawYourEnding,
-    includeCrayonSwatches: book.includeCrayonSwatches,
-    printLayout: book.printLayout,
-    heroPhotoUrl: book.heroPhotoUrl,
-    heroSubjectType: book.heroSubjectType,
-    brandIntegration: book.brandIntegration,
-    language: book.language,
-    secondaryLanguage: book.secondaryLanguage,
-    activityMode: book.activityMode,
-    dedicationAuthor: book.dedicationAuthor,
-  };
+  return enqueueWrite(async () => {
+    const currentFavs = [...cachedFavorites];
+    const existingIdx = currentFavs.findIndex(
+      (fav) => fav.id === book.id || (fav.theme === book.theme && fav.childName === book.childName)
+    );
 
-  if (existingIdx >= 0) {
-    currentFavs[existingIdx] = favoriteItem;
-  } else {
-    currentFavs.unshift(favoriteItem);
-  }
+    const favoriteItem: FavoriteBook = {
+      id: book.id || `fav-${Date.now()}`,
+      savedAt: Date.now(),
+      theme: book.theme,
+      childName: book.childName,
+      title: book.title,
+      subtitle: book.subtitle,
+      dedication: book.dedication,
+      difficulty: book.difficulty,
+      resolution: book.resolution,
+      aspectRatio: book.aspectRatio,
+      pageCount: (book as any).pages?.length || (book as any).pageCount || 5,
+      coverImageUrl: book.coverImageUrl,
+      pages: (book as any).pages || [],
+      stickerSheet: book.stickerSheet,
+      defaultBorderStyle: book.defaultBorderStyle,
+      includeCertificate: book.includeCertificate,
+      certificateDetails: book.certificateDetails,
+      includeQrCode: book.includeQrCode,
+      includeDrawYourEnding: book.includeDrawYourEnding,
+      includeCrayonSwatches: book.includeCrayonSwatches,
+      printLayout: book.printLayout,
+      heroPhotoUrl: book.heroPhotoUrl,
+      heroSubjectType: book.heroSubjectType,
+      brandIntegration: book.brandIntegration,
+      language: book.language,
+      secondaryLanguage: book.secondaryLanguage,
+      activityMode: book.activityMode,
+      dedicationAuthor: book.dedicationAuthor,
+    };
 
-  cachedFavorites = currentFavs;
-
-  try {
-    await set(KEY_FAVORITES, currentFavs, bookStore);
-    if (typeof window !== 'undefined') {
-      window.dispatchEvent(new CustomEvent('coloring_book_favorites_updated'));
+    if (existingIdx >= 0) {
+      currentFavs[existingIdx] = favoriteItem;
+    } else {
+      currentFavs.unshift(favoriteItem);
     }
-  } catch (err) {
-    console.warn('IndexedDB favorite write failed, saved in memory cache:', err);
-  }
 
-  return favoriteItem;
+    cachedFavorites = currentFavs;
+
+    try {
+      await set(KEY_FAVORITES, currentFavs, bookStore);
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('coloring_book_favorites_updated'));
+      }
+    } catch (err) {
+      console.warn('IndexedDB favorite write failed, saved in memory cache:', err);
+    }
+
+    return favoriteItem;
+  });
 }
 
 export function getFavoritesSync(): FavoriteBook[] {
@@ -291,6 +314,7 @@ export function getFavoritesSync(): FavoriteBook[] {
 }
 
 export async function getFavoritesAsync(): Promise<FavoriteBook[]> {
+  await storageReady();
   try {
     const list = await get<FavoriteBook[]>(KEY_FAVORITES, bookStore);
     if (Array.isArray(list)) {
@@ -304,16 +328,19 @@ export async function getFavoritesAsync(): Promise<FavoriteBook[]> {
 }
 
 export async function removeFavoriteFromDb(favoriteId: string): Promise<void> {
-  cachedFavorites = cachedFavorites.filter((fav) => fav.id !== favoriteId);
+  await storageReady();
+  return enqueueWrite(async () => {
+    cachedFavorites = cachedFavorites.filter((fav) => fav.id !== favoriteId);
 
-  try {
-    await set(KEY_FAVORITES, cachedFavorites, bookStore);
-    if (typeof window !== 'undefined') {
-      window.dispatchEvent(new CustomEvent('coloring_book_favorites_updated'));
+    try {
+      await set(KEY_FAVORITES, cachedFavorites, bookStore);
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('coloring_book_favorites_updated'));
+      }
+    } catch (err) {
+      console.warn('IndexedDB remove favorite failed:', err);
     }
-  } catch (err) {
-    console.warn('IndexedDB remove favorite failed:', err);
-  }
+  });
 }
 
 export function isFavoriteSync(bookId?: string, theme?: string, childName?: string): boolean {
@@ -336,6 +363,7 @@ export function getHistorySync(): ColoringBook[] {
 }
 
 export async function getHistoryAsync(): Promise<ColoringBook[]> {
+  await storageReady();
   try {
     const list = await get<ColoringBook[]>(KEY_HISTORY, bookStore);
     if (Array.isArray(list)) {
@@ -350,61 +378,70 @@ export async function getHistoryAsync(): Promise<ColoringBook[]> {
 
 export async function addHistoryBookToDb(book: ColoringBook): Promise<ColoringBook[]> {
   if (!book || !book.id) return cachedHistory;
+  await storageReady();
 
-  const current = [...cachedHistory];
-  const filtered = current.filter(
-    (item) =>
-      item.id !== book.id &&
-      !(item.theme === book.theme && item.childName === book.childName && item.title === book.title)
-  );
+  return enqueueWrite(async () => {
+    const current = [...cachedHistory];
+    const filtered = current.filter(
+      (item) =>
+        item.id !== book.id &&
+        !(item.theme === book.theme && item.childName === book.childName && item.title === book.title)
+    );
 
-  const updated = [book, ...filtered].slice(0, MAX_HISTORY_ITEMS);
-  cachedHistory = updated;
+    const updated = [book, ...filtered].slice(0, MAX_HISTORY_ITEMS);
+    cachedHistory = updated;
 
-  try {
-    await set(KEY_HISTORY, updated, bookStore);
-    if (typeof window !== 'undefined') {
-      window.dispatchEvent(
-        new CustomEvent('coloring_book_session_history_updated', { detail: updated })
-      );
+    try {
+      await set(KEY_HISTORY, updated, bookStore);
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(
+          new CustomEvent('coloring_book_session_history_updated', { detail: updated })
+        );
+      }
+    } catch (err) {
+      console.warn('IndexedDB session history write failed:', err);
     }
-  } catch (err) {
-    console.warn('IndexedDB session history write failed:', err);
-  }
 
-  return updated;
+    return updated;
+  });
 }
 
 export async function removeHistoryBookFromDb(bookId: string): Promise<ColoringBook[]> {
-  const updated = cachedHistory.filter((item) => item.id !== bookId);
-  cachedHistory = updated;
+  await storageReady();
+  return enqueueWrite(async () => {
+    const updated = cachedHistory.filter((item) => item.id !== bookId);
+    cachedHistory = updated;
 
-  try {
-    await set(KEY_HISTORY, updated, bookStore);
-    if (typeof window !== 'undefined') {
-      window.dispatchEvent(
-        new CustomEvent('coloring_book_session_history_updated', { detail: updated })
-      );
+    try {
+      await set(KEY_HISTORY, updated, bookStore);
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(
+          new CustomEvent('coloring_book_session_history_updated', { detail: updated })
+        );
+      }
+    } catch (err) {
+      console.warn('IndexedDB remove history book failed:', err);
     }
-  } catch (err) {
-    console.warn('IndexedDB remove history book failed:', err);
-  }
 
-  return updated;
+    return updated;
+  });
 }
 
 export async function clearHistoryInDb(): Promise<void> {
-  cachedHistory = [];
-  try {
-    await del(KEY_HISTORY, bookStore);
-    if (typeof window !== 'undefined') {
-      window.dispatchEvent(
-        new CustomEvent('coloring_book_session_history_updated', { detail: [] })
-      );
+  await storageReady();
+  return enqueueWrite(async () => {
+    cachedHistory = [];
+    try {
+      await del(KEY_HISTORY, bookStore);
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(
+          new CustomEvent('coloring_book_session_history_updated', { detail: [] })
+        );
+      }
+    } catch (err) {
+      console.warn('IndexedDB clear history failed:', err);
     }
-  } catch (err) {
-    console.warn('IndexedDB clear history failed:', err);
-  }
+  });
 }
 
 /* ================= PARENTAL CONSENT OPERATIONS (INDEXEDDB) ================= */
@@ -418,6 +455,7 @@ export function getParentalConsentRecordSync(): ParentalConsentRecord | null {
 }
 
 export async function getParentalConsentAsync(): Promise<boolean> {
+  await storageReady();
   try {
     const record = await get<ParentalConsentRecord>(KEY_PARENTAL_CONSENT, consentStore);
     if (record && record.granted) {
@@ -474,15 +512,18 @@ export async function saveParentalConsentAsync(details?: {
 }
 
 export async function revokeParentalConsentAsync(): Promise<void> {
-  cachedConsent = null;
-  try {
-    await del(KEY_PARENTAL_CONSENT, consentStore);
-    if (typeof window !== 'undefined') {
-      window.dispatchEvent(new CustomEvent('parental_consent_updated', { detail: null }));
+  await storageReady();
+  return enqueueWrite(async () => {
+    cachedConsent = null;
+    try {
+      await del(KEY_PARENTAL_CONSENT, consentStore);
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('parental_consent_updated', { detail: null }));
+      }
+    } catch (err) {
+      console.warn('Failed to revoke parental consent in IndexedDB:', err);
     }
-  } catch (err) {
-    console.warn('Failed to revoke parental consent in IndexedDB:', err);
-  }
+  });
 }
 
 /**
@@ -491,36 +532,39 @@ export async function revokeParentalConsentAsync(): Promise<void> {
  * from IndexedDB, localStorage, and in-memory caches.
  */
 export async function purgeAllChildData(): Promise<void> {
-  cachedAutosave = null;
-  cachedFavorites = [];
-  cachedHistory = [];
-  cachedConsent = null;
+  await storageReady();
+  return enqueueWrite(async () => {
+    cachedAutosave = null;
+    cachedFavorites = [];
+    cachedHistory = [];
+    cachedConsent = null;
 
-  try {
-    await clear(bookStore);
-    await clear(consentStore);
-  } catch (err) {
-    console.warn('Error clearing IndexedDB stores:', err);
-  }
-
-  if (typeof localStorage !== 'undefined') {
     try {
-      localStorage.removeItem('coloring_book_autosaved_session_v1');
-      localStorage.removeItem('coloring_book_favorites_v1');
-      localStorage.removeItem('colorcraft_parental_consent_v1');
-    } catch (e) {}
-  }
+      await clear(bookStore);
+      await clear(consentStore);
+    } catch (err) {
+      console.warn('Error clearing IndexedDB stores:', err);
+    }
 
-  if (typeof sessionStorage !== 'undefined') {
-    try {
-      sessionStorage.removeItem('coloring_book_session_history_v1');
-    } catch (e) {}
-  }
+    if (typeof localStorage !== 'undefined') {
+      try {
+        localStorage.removeItem('coloring_book_autosaved_session_v1');
+        localStorage.removeItem('coloring_book_favorites_v1');
+        localStorage.removeItem('colorcraft_parental_consent_v1');
+      } catch (e) {}
+    }
 
-  if (typeof window !== 'undefined') {
-    window.dispatchEvent(new CustomEvent('coloring_book_autosave_cleared'));
-    window.dispatchEvent(new CustomEvent('coloring_book_favorites_updated'));
-    window.dispatchEvent(new CustomEvent('coloring_book_session_history_updated', { detail: [] }));
-    window.dispatchEvent(new CustomEvent('parental_consent_updated', { detail: null }));
-  }
+    if (typeof sessionStorage !== 'undefined') {
+      try {
+        sessionStorage.removeItem('coloring_book_session_history_v1');
+      } catch (e) {}
+    }
+
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('coloring_book_autosave_cleared'));
+      window.dispatchEvent(new CustomEvent('coloring_book_favorites_updated'));
+      window.dispatchEvent(new CustomEvent('coloring_book_session_history_updated', { detail: [] }));
+      window.dispatchEvent(new CustomEvent('parental_consent_updated', { detail: null }));
+    }
+  });
 }

@@ -37,7 +37,7 @@ import { generateColoringBookPdf } from './utils/pdfGenerator';
 import { playChimeSound } from './utils/kidAudio';
 import { escapeHtml } from './utils/security';
 import { storageReady } from './utils/dbStorage';
-import { getClientSessionId } from './utils/session';
+import { getClientSessionId, initServerSession } from './utils/session';
 import {
   saveBookToLocalStorage,
   getAutosavedSession,
@@ -137,6 +137,7 @@ export default function App() {
     };
 
     // Guarantee that storageReady has completed before marking hydrated
+    initServerSession().catch((err) => console.warn('Session sync warning:', err));
     storageReady()
       .then(() => {
         if (isMounted) {

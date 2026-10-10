@@ -305,19 +305,21 @@ export const Header: React.FC<HeaderProps> = ({
             <span>{isGeneratingPdf ? '...' : 'PDF Book'}</span>
           </button>
 
-          {/* Export Code (.ZIP) Button - 100% visible across all screens */}
-          <a
-            href="/api/download-project"
-            download="coloring-book-studio-latest.zip"
-            onClick={() => playChimeSound('sparkle')}
-            className="flex items-center gap-1 sm:gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 active:scale-98 text-white text-xs font-bold shadow-xs transition-all cursor-pointer"
-            id="header-export-code-btn"
-            title="Download full project source code (.ZIP archive) with all latest changes"
-          >
-            <FolderDown className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Export Code (.ZIP)</span>
-            <span className="sm:hidden">ZIP</span>
-          </a>
+          {/* Export Code (.ZIP) Button - Visible in development environment only */}
+          {import.meta.env.DEV && (
+            <a
+              href="/api/download-project"
+              download="coloring-book-studio-latest.zip"
+              onClick={() => playChimeSound('sparkle')}
+              className="flex items-center gap-1 sm:gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 active:scale-98 text-white text-xs font-bold shadow-xs transition-all cursor-pointer"
+              id="header-export-code-btn"
+              title="Download full project source code (.ZIP archive) with all latest changes"
+            >
+              <FolderDown className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Export Code (.ZIP)</span>
+              <span className="sm:hidden">ZIP</span>
+            </a>
+          )}
 
           {/* Global Dark Mode Toggle */}
           {onToggleDarkMode && (
@@ -576,33 +578,35 @@ export const Header: React.FC<HeaderProps> = ({
                     </button>
                   )}
 
-                  {/* Export Project Source Code (.ZIP) */}
-                  <a
-                    href="/api/download-project"
-                    download="coloring-book-studio-latest.zip"
-                    onClick={() => {
-                      playChimeSound('sparkle');
-                      setIsMoreMenuOpen(false);
-                    }}
-                    className="w-full flex items-center justify-between px-3 py-2 text-left text-xs hover:bg-emerald-50 dark:hover:bg-emerald-950/40 transition-colors group cursor-pointer border-t border-amber-100 dark:border-slate-800"
-                    title="Export complete codebase with latest changes"
-                  >
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      <div className="p-1.5 rounded-lg bg-emerald-100 dark:bg-emerald-900/60 text-emerald-800 dark:text-emerald-300">
-                        <FolderDown className="w-3.5 h-3.5" />
-                      </div>
-                      <div className="min-w-0">
-                        <div className="font-semibold text-gray-900 dark:text-slate-100 flex items-center gap-1.5">
-                          <span>Download Project (.ZIP)</span>
-                          <span className="text-[10px] bg-emerald-100 dark:bg-emerald-900/70 text-emerald-800 dark:text-emerald-300 px-1.5 py-0.2 rounded-full font-bold">
-                            Source
-                          </span>
+                  {/* Export Project Source Code (.ZIP) - Development only */}
+                  {import.meta.env.DEV && (
+                    <a
+                      href="/api/download-project"
+                      download="coloring-book-studio-latest.zip"
+                      onClick={() => {
+                        playChimeSound('sparkle');
+                        setIsMoreMenuOpen(false);
+                      }}
+                      className="w-full flex items-center justify-between px-3 py-2 text-left text-xs hover:bg-emerald-50 dark:hover:bg-emerald-950/40 transition-colors group cursor-pointer border-t border-amber-100 dark:border-slate-800"
+                      title="Export complete codebase with latest changes"
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div className="p-1.5 rounded-lg bg-emerald-100 dark:bg-emerald-900/60 text-emerald-800 dark:text-emerald-300">
+                          <FolderDown className="w-3.5 h-3.5" />
                         </div>
-                        <div className="text-[11px] text-gray-500 dark:text-slate-400 truncate">Export full codebase for Claude / GitHub</div>
+                        <div className="min-w-0">
+                          <div className="font-semibold text-gray-900 dark:text-slate-100 flex items-center gap-1.5">
+                            <span>Download Project (.ZIP)</span>
+                            <span className="text-[10px] bg-emerald-100 dark:bg-emerald-900/70 text-emerald-800 dark:text-emerald-300 px-1.5 py-0.2 rounded-full font-bold">
+                              Source
+                            </span>
+                          </div>
+                          <div className="text-[11px] text-gray-500 dark:text-slate-400 truncate">Export full codebase for Claude / GitHub</div>
+                        </div>
                       </div>
-                    </div>
-                    <ChevronRight className="w-3.5 h-3.5 text-gray-400 group-hover:text-emerald-600 transition-transform group-hover:translate-x-0.5" />
-                  </a>
+                      <ChevronRight className="w-3.5 h-3.5 text-gray-400 group-hover:text-emerald-600 transition-transform group-hover:translate-x-0.5" />
+                    </a>
+                  )}
 
                   {/* COPPA Child Privacy: Erase All Stored Data */}
                   <button

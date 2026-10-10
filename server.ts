@@ -25,8 +25,8 @@ app.disable('x-powered-by');
 // Security: Comprehensive HTTP Security Headers configured for AI Studio iFrame preview
 const isProduction = process.env.NODE_ENV === 'production';
 const contentSecurityPolicy = isProduction
-  ? "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; media-src 'self' data: blob:; connect-src 'self' https:; frame-ancestors 'self' https://*.google.com https://*.run.app;"
-  : "default-src 'self' https: data: blob: 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; media-src 'self' data: blob:; connect-src 'self' https:; frame-ancestors *;";
+  ? "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; media-src 'self' data: blob:; connect-src 'self' https:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self' https://*.google.com https://*.run.app;"
+  : "default-src 'self' https: data: blob: 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; media-src 'self' data: blob:; connect-src 'self' https:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors *;";
 
 app.use((_req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -78,14 +78,22 @@ const CONSENT_SECRET = process.env.CONSENT_SECRET || crypto.randomBytes(32).toSt
 
 function createConsentToken(data: {
   guardianRole: string;
-  childName?: string;
-  sessionId?: string;
+  childName: string;
+  sessionId: string;
 }): { token: string; expiresAt: number } {
+  const cleanSession = (data.sessionId || '').trim();
+  if (!cleanSession) {
+    throw new Error('A nonempty session ID is required when issuing a consent token.');
+  }
+  const cleanChild = (data.childName || '').trim().toLowerCase();
+  if (!cleanChild) {
+    throw new Error('A nonempty child name is required when issuing a consent token.');
+  }
   const expiresAt = Date.now() + 4 * 60 * 60 * 1000; // 4 hours validity
   const payload = JSON.stringify({
     role: data.guardianRole,
-    childName: (data.childName || '').trim().toLowerCase(),
-    sessionId: (data.sessionId || '').trim(),
+    childName: cleanChild,
+    sessionId: cleanSession,
     issuedAt: Date.now(),
     expiresAt,
   });
@@ -101,7 +109,7 @@ function verifyConsentToken(token: string | undefined): { valid: boolean; payloa
   if (!token || typeof token !== 'string') {
     return {
       valid: false,
-      reason: 'Server-side verified parental consent is required under COPPA/GDPR-K before processing child photos.',
+      reason: 'Recorded parental consent evidence is required under COPPA/GDPR-K before processing child photos.',
     };
   }
   const parts = token.split('.');
@@ -119,6 +127,14 @@ function verifyConsentToken(token: string | undefined): { valid: boolean; payloa
     const payload = JSON.parse(Buffer.from(b64Payload, 'base64url').toString('utf8'));
     if (!payload.expiresAt || payload.expiresAt < Date.now()) {
       return { valid: false, reason: 'Parental consent token has expired. Please reconfirm parental consent.' };
+    }
+    const tokenSession = (payload.sessionId || '').trim();
+    if (!tokenSession) {
+      return { valid: false, reason: 'Parental consent token is missing a bound session ID.' };
+    }
+    const tokenChild = (payload.childName || '').trim();
+    if (!tokenChild) {
+      return { valid: false, reason: 'Parental consent token is missing a bound child name.' };
     }
     return { valid: true, payload };
   } catch {
@@ -190,6 +206,18 @@ interface SessionQuotaConfig {
   endpointName: string;
 }
 
+/**
+ * Shared Quota & Rate Limit Store abstraction.
+ * For single-instance environments, uses memory Map.
+ * For multi-instance production deployments, plug in a Redis or Memcached store
+ * (e.g., rate-limit-redis or ioredis adapter) to share state across distributed pods.
+ */
+export interface SharedQuotaStore {
+  get(key: string): Promise<{ count: number; resetAt: number } | undefined> | { count: number; resetAt: number } | undefined;
+  set(key: string, value: { count: number; resetAt: number }): Promise<void> | void;
+  delete(key: string): Promise<void> | void;
+}
+
 const sessionQuotaStore = new Map<string, { count: number; resetAt: number }>();
 
 // Periodic garbage collection for expired session quota records
@@ -203,16 +231,91 @@ setInterval(() => {
 }, 5 * 60 * 1000);
 
 /**
- * Reliable extraction of anonymous session identifier across headers, body, query, and IP.
+ * Server-issued, HMAC-signed anonymous session generator.
+ * Eliminates trust in arbitrary client-generated identifiers while preserving
+ * anonymous COPPA privacy compliance without requiring user account sign-in.
+ */
+function createSignedSessionId(): string {
+  const nonce = crypto.randomBytes(16).toString('hex');
+  const timestamp = Date.now().toString(36);
+  const rawId = `sess_${timestamp}_${nonce}`;
+  const sig = crypto.createHmac('sha256', CONSENT_SECRET).update(rawId).digest('base64url');
+  return `${rawId}.${sig}`;
+}
+
+function verifySignedSessionId(sessionId: string | undefined): { valid: boolean; rawId?: string } {
+  if (!sessionId || typeof sessionId !== 'string') return { valid: false };
+  const parts = sessionId.split('.');
+  if (parts.length !== 2) return { valid: false };
+  const [rawId, sig] = parts;
+  if (!rawId.startsWith('sess_')) return { valid: false };
+  const expectedSig = crypto.createHmac('sha256', CONSENT_SECRET).update(rawId).digest('base64url');
+  const sigBuf = Buffer.from(sig);
+  const expBuf = Buffer.from(expectedSig);
+  if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
+    return { valid: false };
+  }
+  return { valid: true, rawId };
+}
+
+/**
+ * Reliable extraction of anonymous session identifier.
+ * Binds network IP together with server-verified session identifier.
+ * STRENGTHENED: Arbitrary client-controlled session IDs cannot reset or partition quotas.
+ * If the session ID is not cryptographically signed and verified by the server, it collapses
+ * to a single shared IP anchor bucket (${clientIp}#ip_unverified_pool) so cycling client IDs
+ * has zero effect on quota limits.
  */
 function getAnonymousSessionId(req: express.Request): string {
-  const rawSession =
-    (req.headers['x-session-id'] as string) ||
-    (req.body && req.body.sessionId) ||
-    (req.query && (req.query.sessionId as string)) ||
-    req.ip ||
-    'unknown-session';
-  return sanitizeSafeString(rawSession, 120) || 'unknown-session';
+  const clientIp = (req.ip || req.socket.remoteAddress || 'unknown-ip').replace(/^.*:/, '') || 'client';
+  const bodySession = typeof req.body?.sessionId === 'string' ? req.body.sessionId.trim() : '';
+  const headerSession = typeof req.headers['x-session-id'] === 'string' ? (req.headers['x-session-id'] as string).trim() : '';
+
+  // Disallow mismatch between header and body
+  if (bodySession && headerSession && bodySession !== headerSession) {
+    return `${clientIp}#ip_unverified_pool`;
+  }
+
+  const candidateSession = bodySession || headerSession;
+  const verified = verifySignedSessionId(candidateSession);
+
+  if (verified.valid && verified.rawId) {
+    return `${clientIp}#${verified.rawId}`;
+  }
+
+  // Untrusted or unsigned client string: collapse to IP pool so limit resets are impossible
+  return `${clientIp}#ip_unverified_pool`;
+}
+
+// -------------------------------------------------------------
+// AI PROVIDER COST MONITORING & HARD SPENDING LIMIT SYSTEM
+// -------------------------------------------------------------
+const AI_DAILY_BUDGET_USD = parseFloat(process.env.AI_DAILY_BUDGET_USD || '50.00'); // Default $50/day hard limit
+let dailyEstimatedCostUsd = 0;
+let dailyRequestsTracked = 0;
+let dailyCostResetTimestamp = Date.now() + 24 * 60 * 60 * 1000;
+
+function checkAiBudgetCircuitBreaker(): { allowed: boolean; reason?: string } {
+  const now = Date.now();
+  if (now >= dailyCostResetTimestamp) {
+    dailyEstimatedCostUsd = 0;
+    dailyRequestsTracked = 0;
+    dailyCostResetTimestamp = now + 24 * 60 * 60 * 1000;
+  }
+  if (dailyEstimatedCostUsd >= AI_DAILY_BUDGET_USD) {
+    return {
+      allowed: false,
+      reason: `Daily AI usage spending limit ($${AI_DAILY_BUDGET_USD.toFixed(2)}) reached. Requests are safely paused to prevent unexpected provider charges.`,
+    };
+  }
+  return { allowed: true };
+}
+
+function recordAiUsageEstimate(estimatedTokens: number = 1000, isImage: boolean = false) {
+  // Conservative cost estimations for Flash / Imagen operations
+  const cost = isImage ? 0.04 : (estimatedTokens / 1000) * 0.0003;
+  dailyEstimatedCostUsd += cost;
+  dailyRequestsTracked += 1;
 }
 
 function createSessionQuotaMiddleware(config: SessionQuotaConfig): express.RequestHandler {
@@ -520,8 +623,12 @@ const PhotoToLineArtSchema = z
     sceneSetting: createSafeTextSchema({ fieldName: 'sceneSetting', min: 0, max: 200 }).default(
       'exploring a whimsical wonderland'
     ),
-    parentConsentToken: z.string().optional(),
-    sessionId: z.string().trim().max(120).optional(),
+    parentConsentToken: z.string().trim().min(1, 'Parental consent token cannot be empty.'),
+    sessionId: z
+      .string()
+      .trim()
+      .min(1, 'A nonempty session ID is required when processing a photo.')
+      .max(120),
   })
   .strip();
 
@@ -564,9 +671,13 @@ const VerifyParentalConsentSchema = z
   .object({
     guardianRole: z.enum(['parent', 'guardian', 'educator']).default('parent'),
     childName: createSafeTextSchema({ fieldName: 'childName', min: 1, max: 50, required: true }),
-    sessionId: z.string().trim().max(120).optional(),
+    sessionId: z
+      .string()
+      .trim()
+      .min(1, 'A nonempty session ID is required when issuing a consent token.')
+      .max(120),
     coppaConfirmed: z.boolean().refine((val) => val === true, {
-      message: 'COPPA confirmation is required to issue a parental consent verification token.',
+      message: 'Explicit COPPA parental consent confirmation is required to record parental consent.',
     }),
   })
   .strip();
@@ -635,17 +746,12 @@ app.get('/api/download-project', downloadRateLimiter, (req, res) => {
     });
   }
 
-  if (process.env.NODE_ENV === 'production') {
-    const authHeader = req.headers['authorization'];
-    const bearerKey = authHeader?.startsWith('Bearer ') ? authHeader.slice(7).trim() : undefined;
-    const adminKey = (req.headers['x-admin-key'] as string) || bearerKey;
-
-    if (!process.env.ADMIN_KEY || !adminKey || adminKey !== process.env.ADMIN_KEY) {
-      return res.status(403).json({
-        success: false,
-        error: 'Project source archive download is disabled in production environments.',
-      });
-    }
+  // PRODUCTION HARDENING: Source archive download must not exist in deployed production environments
+  if (process.env.NODE_ENV === 'production' || process.env.DISABLE_SOURCE_DOWNLOAD === 'true') {
+    return res.status(404).json({
+      success: false,
+      error: 'Project source archive download is disabled in deployed production environments.',
+    });
   }
 
   try {
@@ -1344,7 +1450,35 @@ app.post('/api/generate-cover', imageRateLimiter, coverSessionQuota, async (req,
   }
 });
 
-// Endpoint: Issue cryptographically signed parental consent verification token (COPPA / GDPR-K)
+// Endpoint: Issue or renew server-issued, cryptographically signed anonymous session ID
+app.get('/api/session', (req, res) => {
+  const incoming = (req.headers['x-session-id'] as string | undefined)?.trim();
+  if (incoming && verifySignedSessionId(incoming).valid) {
+    res.setHeader('X-Session-ID', incoming);
+    return res.json({ success: true, sessionId: incoming, isNew: false });
+  }
+  const newSessionId = createSignedSessionId();
+  res.setHeader('X-Session-ID', newSessionId);
+  return res.json({ success: true, sessionId: newSessionId, isNew: true });
+});
+
+// Endpoint: AI cost monitoring and hard spending limit status
+app.get('/api/admin/usage-budget', (_req, res) => {
+  const now = Date.now();
+  const resetInSeconds = Math.max(0, Math.ceil((dailyCostResetTimestamp - now) / 1000));
+  return res.json({
+    success: true,
+    currency: 'USD',
+    dailyBudgetLimitUsd: AI_DAILY_BUDGET_USD,
+    dailyEstimatedCostUsd: Number(dailyEstimatedCostUsd.toFixed(4)),
+    remainingBudgetUsd: Number(Math.max(0, AI_DAILY_BUDGET_USD - dailyEstimatedCostUsd).toFixed(4)),
+    dailyRequestsTracked,
+    resetInSeconds,
+    status: dailyEstimatedCostUsd >= AI_DAILY_BUDGET_USD ? 'BUDGET_EXCEEDED_PAUSED' : 'HEALTHY',
+  });
+});
+
+// Endpoint: Issue cryptographically signed evidence of recorded parental consent flow (COPPA / GDPR-K)
 app.post('/api/verify-parental-consent', consentRateLimiter, (req, res) => {
   try {
     const validationResult = validateWithZod(VerifyParentalConsentSchema, req.body);
@@ -1358,11 +1492,38 @@ app.post('/api/verify-parental-consent', consentRateLimiter, (req, res) => {
 
     const { guardianRole, childName, sessionId } = validationResult.data;
     const cleanChildName = sanitizeSafeString(childName || '', 40);
-    const clientSessionId = (req.headers['x-session-id'] as string) || sessionId || '';
+    const bodySession = (sessionId || '').trim();
+    const headerSession = (req.headers['x-session-id'] as string | undefined)?.trim();
+
+    // Require a nonempty session ID when issuing a consent token
+    if (!bodySession) {
+      return res.status(400).json({
+        success: false,
+        error: 'A nonempty session ID is required when issuing a consent token.',
+      });
+    }
+
+    // Strict comparison: disallow client selecting a new identity simply by changing a header
+    if (headerSession && headerSession !== bodySession) {
+      return res.status(400).json({
+        success: false,
+        error: 'Session ID mismatch between request header and body.',
+      });
+    }
+
+    // Require strict valid server-issued signed session token
+    const sessionCheck = verifySignedSessionId(bodySession);
+    if (!sessionCheck.valid) {
+      return res.status(400).json({
+        success: false,
+        error: 'A valid server-issued signed session ID is required to record parental consent.',
+      });
+    }
+
     const { token, expiresAt } = createConsentToken({
       guardianRole,
       childName: cleanChildName,
-      sessionId: clientSessionId,
+      sessionId: bodySession,
     });
     return res.json({
       success: true,
@@ -1383,9 +1544,18 @@ app.post('/api/photo-to-line-art', imageRateLimiter, photoToArtSessionQuota, asy
       return res.status(400).json({ success: false, error: parsed.error, issues: parsed.issues });
     }
 
-    // Cryptographic server-side parental consent enforcement (COPPA)
-    const consentHeader = req.headers['x-parental-consent-token'] as string | undefined;
-    const rawConsentToken = parsed.data.parentConsentToken || consentHeader;
+    // Strict parental consent flow evidence verification (COPPA / GDPR-K)
+    const consentHeader = (req.headers['x-parental-consent-token'] as string | undefined)?.trim();
+    const bodyConsentToken = parsed.data.parentConsentToken?.trim();
+
+    if (consentHeader && bodyConsentToken && consentHeader !== bodyConsentToken) {
+      return res.status(400).json({
+        success: false,
+        error: 'Parental consent token mismatch between header and request body.',
+      });
+    }
+
+    const rawConsentToken = bodyConsentToken || consentHeader;
     const consentCheck = verifyConsentToken(rawConsentToken);
     if (!consentCheck.valid) {
       return res.status(403).json({
@@ -1410,23 +1580,49 @@ app.post('/api/photo-to-line-art', imageRateLimiter, photoToArtSessionQuota, asy
     const theme = sanitizeSafeString(rawTheme, 60) || 'adventure';
     const sceneSetting = sanitizeSafeString(rawSceneSetting, 150) || 'exploring a whimsical wonderland';
 
-    // Verify cryptographic child name binding:
-    // Strictly require that the token's child binding matches the target child name.
-    // Disallow empty-binding bypass and disallow 'hero' wildcard bypass.
+    // Verify child-specific consent binding strictly:
+    // Disallow empty-binding bypass and disallow using token for a different child
     const tokenChild = (consentCheck.payload?.childName || '').trim().toLowerCase();
     const currentChild = childName.trim().toLowerCase();
     if (!tokenChild || !currentChild || tokenChild !== currentChild) {
       return res.status(403).json({
         success: false,
-        error: `Parental consent token was issued for "${consentCheck.payload?.childName || 'unspecified'}" and cannot be used for "${childName}". Please confirm parental consent for this child.`,
+        error: `Parental consent token was recorded for "${consentCheck.payload?.childName || 'unspecified'}" and cannot be used for "${childName}". Please complete the explicit parental consent flow for this child.`,
         isConsentRequired: true,
       });
     }
 
-    // Verify cryptographic browser session binding
-    const currentSession = (req.headers['x-session-id'] as string) || reqBodySession;
-    const tokenSession = consentCheck.payload?.sessionId;
-    if (tokenSession && currentSession && tokenSession !== currentSession) {
+    // Require a nonempty session ID when processing a photo
+    const headerSession = (req.headers['x-session-id'] as string | undefined)?.trim();
+    const currentSession = reqBodySession?.trim();
+
+    if (!currentSession) {
+      return res.status(400).json({
+        success: false,
+        error: 'A nonempty session ID is required when processing a photo.',
+      });
+    }
+
+    // Disallow client selecting a new identity simply by changing a header
+    if (headerSession && headerSession !== currentSession) {
+      return res.status(400).json({
+        success: false,
+        error: 'Session ID mismatch between request header and body.',
+      });
+    }
+
+    // Require strict valid server-issued signed session token
+    const sessionCheck = verifySignedSessionId(currentSession);
+    if (!sessionCheck.valid) {
+      return res.status(400).json({
+        success: false,
+        error: 'A valid server-issued signed session ID is required when processing a photo.',
+      });
+    }
+
+    // Compare the IDs strictly and reject the request if either is missing or they differ
+    const tokenSession = (consentCheck.payload?.sessionId || '').trim();
+    if (!tokenSession || !currentSession || tokenSession !== currentSession) {
       return res.status(403).json({
         success: false,
         error: 'Parental consent verification token was issued to a different session. Please confirm consent again.',
