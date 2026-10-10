@@ -16,12 +16,17 @@ import { ColoringBook, FavoriteBook } from '../types';
  * This eliminates:
  * NotFoundError: Failed to execute 'transaction' on 'IDBDatabase': One of the specified object stores was not found.
  */
+const storeResetCallbacks = new Set<() => void>();
+
 export function createSafeStore(
   dbName: string,
   storeName: string,
   allRequiredStores: string[] = ['coloring_books', 'privacy_consent', 'keyval']
 ) {
   let dbPromise: Promise<IDBDatabase> | null = null;
+  storeResetCallbacks.add(() => {
+    dbPromise = null;
+  });
 
   const getDB = (): Promise<IDBDatabase> => {
     if (dbPromise) return dbPromise;
@@ -775,4 +780,21 @@ export async function purgeAllChildData(): Promise<void> {
       window.dispatchEvent(new CustomEvent('parental_consent_updated', { detail: null }));
     }
   });
+}
+
+/**
+ * Resets in-memory storage state (used in unit test suites).
+ */
+export function resetStorageStateForTesting() {
+  for (const cb of storeResetCallbacks) {
+    cb();
+  }
+  cachedAutosave = null;
+  cachedFavorites = [];
+  cachedHistory = [];
+  cachedConsent = null;
+  isInitialized = false;
+  initError = null;
+  initPromise = null;
+  writeQueue = Promise.resolve();
 }

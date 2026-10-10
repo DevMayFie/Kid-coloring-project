@@ -76,7 +76,7 @@ if (isProduction && !process.env.CONSENT_SECRET) {
 }
 const CONSENT_SECRET = process.env.CONSENT_SECRET || crypto.randomBytes(32).toString('hex');
 
-function createConsentToken(data: {
+export function createConsentToken(data: {
   guardianRole: string;
   childName: string;
   sessionId: string;
@@ -105,7 +105,7 @@ function createConsentToken(data: {
   };
 }
 
-function verifyConsentToken(token: string | undefined): { valid: boolean; payload?: any; reason?: string } {
+export function verifyConsentToken(token: string | undefined): { valid: boolean; payload?: any; reason?: string } {
   if (!token || typeof token !== 'string') {
     return {
       valid: false,
@@ -225,7 +225,7 @@ export interface SharedQuotaStore {
   delete(key: string): Promise<void> | void;
 }
 
-const sessionQuotaStore = new Map<string, { count: number; resetAt: number }>();
+export const sessionQuotaStore = new Map<string, { count: number; resetAt: number }>();
 
 // Periodic garbage collection for expired session quota records
 setInterval(() => {
@@ -235,16 +235,41 @@ setInterval(() => {
       sessionQuotaStore.delete(key);
     }
   }
-}, 5 * 60 * 1000);
+}, 5 * 60 * 1000).unref();
 
 const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours validity
+
+/**
+ * Standardized IP Normalization:
+ * Correctly handles IPv4, IPv4-mapped IPv6 (::ffff:x.x.x.x), localhost, and IPv6
+ * WITHOUT using .replace(/^.*:/, '') which corrupts valid IPv6 addresses by
+ * stripping all preceding hextets.
+ */
+export function normalizeIp(rawIp: string | undefined): string {
+  if (!rawIp || typeof rawIp !== 'string') return '127.0.0.1';
+  let ip = rawIp.trim();
+  // Strip zone ID / scope identifier if present (e.g. fe80::1%eth0)
+  const zoneIndex = ip.indexOf('%');
+  if (zoneIndex !== -1) {
+    ip = ip.substring(0, zoneIndex);
+  }
+  // Normalize IPv4-mapped IPv6 address (::ffff:192.168.1.1)
+  if (ip.startsWith('::ffff:') || ip.startsWith('::FFFF:')) {
+    return ip.substring(7);
+  }
+  // Normalize localhost IPv6
+  if (ip === '::1') {
+    return '127.0.0.1';
+  }
+  return ip.toLowerCase();
+}
 
 /**
  * Server-issued, HMAC-signed anonymous session generator.
  * Eliminates trust in arbitrary client-generated identifiers while preserving
  * anonymous COPPA privacy compliance without requiring user account sign-in.
  */
-function createSignedSessionId(): string {
+export function createSignedSessionId(): string {
   const nonce = crypto.randomBytes(16).toString('hex');
   const timestamp = Date.now().toString(36);
   const rawId = `sess_${timestamp}_${nonce}`;
@@ -252,7 +277,7 @@ function createSignedSessionId(): string {
   return `${rawId}.${sig}`;
 }
 
-function verifySignedSessionId(sessionId: string | undefined): { valid: boolean; rawId?: string; reason?: string } {
+export function verifySignedSessionId(sessionId: string | undefined): { valid: boolean; rawId?: string; reason?: string } {
   if (!sessionId || typeof sessionId !== 'string') return { valid: false, reason: 'Session ID is missing or invalid' };
   const parts = sessionId.split('.');
   if (parts.length !== 2) return { valid: false, reason: 'Malformed session format' };
@@ -291,8 +316,8 @@ function verifySignedSessionId(sessionId: string | undefined): { valid: boolean;
  * to a single shared IP anchor bucket (${clientIp}#ip_unverified_pool) so cycling client IDs
  * has zero effect on quota limits.
  */
-function getAnonymousSessionId(req: express.Request): string {
-  const clientIp = (req.ip || req.socket.remoteAddress || 'unknown-ip').replace(/^.*:/, '') || 'client';
+export function getAnonymousSessionId(req: express.Request): string {
+  const clientIp = normalizeIp(req.ip || req.socket.remoteAddress);
   const bodySession = typeof req.body?.sessionId === 'string' ? req.body.sessionId.trim() : '';
   const headerSession = typeof req.headers['x-session-id'] === 'string' ? (req.headers['x-session-id'] as string).trim() : '';
 
@@ -315,17 +340,115 @@ function getAnonymousSessionId(req: express.Request): string {
 // -------------------------------------------------------------
 // AI PROVIDER COST MONITORING & CIRCUIT BREAKER SYSTEM
 // -------------------------------------------------------------
-// Note: This is an internal software estimate and application circuit breaker.
-// It is NOT a substitute for hard billing caps configured directly at the provider console.
+// IMPORTANT ARCHITECTURAL NOTE:
+// This budget accounting module tracks internal application-level usage estimates
+// and acts as an immediate defensive circuit breaker to stop runaway traffic.
+// It is NOT a guaranteed hard spending cap at the AI cloud provider level.
+// Cloud administrators MUST configure hard billing caps, budget alerts, and
+// quotas directly within the Google Cloud / Gemini API billing console.
+
+export interface BudgetState {
+  dailyEstimatedCostUsd: number;
+  dailyReservedCostUsd: number;
+  dailyRequestsTracked: number;
+  dailyCostResetTimestamp: number;
+  updatedAt?: number;
+}
+
+export interface SharedBudgetStore {
+  getState(): BudgetState;
+  saveState(state: BudgetState): void;
+}
+
+const BUDGET_STORE_FILE = process.env.AI_BUDGET_STORE_PATH || path.join(process.cwd(), '.ai-budget-state.json');
+
+class FileBudgetStore implements SharedBudgetStore {
+  private filePath: string;
+
+  constructor(filePath: string) {
+    this.filePath = filePath;
+  }
+
+  getState(): BudgetState {
+    try {
+      if (fs.existsSync(this.filePath)) {
+        const raw = fs.readFileSync(this.filePath, 'utf8');
+        const parsed = JSON.parse(raw);
+        if (typeof parsed?.dailyEstimatedCostUsd === 'number') {
+          return {
+            dailyEstimatedCostUsd: parsed.dailyEstimatedCostUsd,
+            dailyReservedCostUsd: typeof parsed.dailyReservedCostUsd === 'number' ? parsed.dailyReservedCostUsd : 0,
+            dailyRequestsTracked: typeof parsed.dailyRequestsTracked === 'number' ? parsed.dailyRequestsTracked : 0,
+            dailyCostResetTimestamp: typeof parsed.dailyCostResetTimestamp === 'number' ? parsed.dailyCostResetTimestamp : Date.now() + 24 * 60 * 60 * 1000,
+            updatedAt: parsed.updatedAt || Date.now(),
+          };
+        }
+      }
+    } catch {
+      // In-memory fallback
+    }
+    return {
+      dailyEstimatedCostUsd: 0,
+      dailyReservedCostUsd: 0,
+      dailyRequestsTracked: 0,
+      dailyCostResetTimestamp: Date.now() + 24 * 60 * 60 * 1000,
+      updatedAt: Date.now(),
+    };
+  }
+
+  saveState(state: BudgetState): void {
+    try {
+      const data = JSON.stringify({ ...state, updatedAt: Date.now() }, null, 2);
+      const tmpPath = `${this.filePath}.${process.pid}.${Date.now()}.tmp`;
+      fs.writeFileSync(tmpPath, data, 'utf8');
+      fs.renameSync(tmpPath, this.filePath);
+    } catch {
+      try {
+        fs.writeFileSync(this.filePath, JSON.stringify(state), 'utf8');
+      } catch (err) {
+        console.warn('Could not persist AI budget state to disk:', err);
+      }
+    }
+  }
+}
+
+let activeBudgetStore: SharedBudgetStore = new FileBudgetStore(BUDGET_STORE_FILE);
+
 const AI_DAILY_BUDGET_USD = parseFloat(process.env.AI_DAILY_BUDGET_USD || '50.00');
-let dailyEstimatedCostUsd = 0;
+
+// Load initial state from persistent store
+const initialBudgetState = activeBudgetStore.getState();
+let dailyEstimatedCostUsd = initialBudgetState.dailyEstimatedCostUsd;
 let dailyReservedCostUsd = 0; // Concurrency reservation lock
-let dailyRequestsTracked = 0;
-let dailyCostResetTimestamp = Date.now() + 24 * 60 * 60 * 1000;
+let dailyRequestsTracked = initialBudgetState.dailyRequestsTracked;
+let dailyCostResetTimestamp = initialBudgetState.dailyCostResetTimestamp;
 let reservationCounter = 0;
-const activeReservations = new Map<string, number>();
+export const activeReservations = new Map<string, number>();
+
+function persistBudgetState() {
+  activeBudgetStore.saveState({
+    dailyEstimatedCostUsd,
+    dailyReservedCostUsd,
+    dailyRequestsTracked,
+    dailyCostResetTimestamp,
+  });
+}
 
 function refreshDailyBudgetWindow() {
+  // Sync from store to support multi-process / multi-instance sharing
+  const external = activeBudgetStore.getState();
+  if (external) {
+    if (external.dailyEstimatedCostUsd > dailyEstimatedCostUsd) {
+      dailyEstimatedCostUsd = external.dailyEstimatedCostUsd;
+    }
+    if (external.dailyRequestsTracked > dailyRequestsTracked) {
+      dailyRequestsTracked = external.dailyRequestsTracked;
+    }
+    if (external.dailyCostResetTimestamp) {
+      dailyCostResetTimestamp = external.dailyCostResetTimestamp;
+    }
+  }
+
   const now = Date.now();
   if (now >= dailyCostResetTimestamp) {
     dailyEstimatedCostUsd = 0;
@@ -333,7 +456,31 @@ function refreshDailyBudgetWindow() {
     dailyRequestsTracked = 0;
     activeReservations.clear();
     dailyCostResetTimestamp = now + 24 * 60 * 60 * 1000;
+    persistBudgetState();
   }
+}
+
+export function setBudgetStoreForTesting(store: SharedBudgetStore) {
+  activeBudgetStore = store;
+}
+
+export function getBudgetState(): BudgetState {
+  refreshDailyBudgetWindow();
+  return {
+    dailyEstimatedCostUsd,
+    dailyReservedCostUsd,
+    dailyRequestsTracked,
+    dailyCostResetTimestamp,
+  };
+}
+
+export function resetBudgetStateForTesting(newEstimatedCost = 0, newReserved = 0) {
+  dailyEstimatedCostUsd = newEstimatedCost;
+  dailyReservedCostUsd = newReserved;
+  dailyRequestsTracked = 0;
+  activeReservations.clear();
+  dailyCostResetTimestamp = Date.now() + 24 * 60 * 60 * 1000;
+  persistBudgetState();
 }
 
 export function checkAiBudgetCircuitBreaker(estimatedCostUsd: number = 0.001): { allowed: boolean; reason?: string } {
@@ -367,6 +514,7 @@ export function reserveAiBudget(estimatedCostUsd: number): { allowed: boolean; r
   const reservationId = `res_${Date.now()}_${reservationCounter}_${crypto.randomBytes(4).toString('hex')}`;
   dailyReservedCostUsd += estimatedCostUsd;
   activeReservations.set(reservationId, estimatedCostUsd);
+  persistBudgetState();
 
   return { allowed: true, reservationId };
 }
@@ -386,6 +534,7 @@ export function commitAiBudget(reservationId: string | undefined, actualCostUsd?
   const finalCost = typeof actualCostUsd === 'number' ? actualCostUsd : reservedAmount;
   dailyEstimatedCostUsd += finalCost;
   dailyRequestsTracked += 1;
+  persistBudgetState();
 }
 
 /**
@@ -396,6 +545,7 @@ export function releaseAiBudgetReservation(reservationId: string | undefined) {
     const reservedAmount = activeReservations.get(reservationId) || 0;
     activeReservations.delete(reservationId);
     dailyReservedCostUsd = Math.max(0, dailyReservedCostUsd - reservedAmount);
+    persistBudgetState();
   }
 }
 
@@ -407,6 +557,7 @@ export function recordAiUsageEstimate(estimatedTokens: number = 1000, isImage: b
   const cost = isImage ? 0.04 : (estimatedTokens / 1000) * 0.0003;
   dailyEstimatedCostUsd += cost;
   dailyRequestsTracked += 1;
+  persistBudgetState();
 }
 
 /**
@@ -414,9 +565,9 @@ export function recordAiUsageEstimate(estimatedTokens: number = 1000, isImage: b
  * Enforces per-endpoint request limits across BOTH the IP envelope and the session token.
  * Prevents clients from resetting or multiplying quotas by acquiring fresh sessions.
  */
-function createSessionQuotaMiddleware(config: SessionQuotaConfig): express.RequestHandler {
+export function createSessionQuotaMiddleware(config: SessionQuotaConfig): express.RequestHandler {
   return (req, res, next) => {
-    const clientIp = (req.ip || req.socket.remoteAddress || 'unknown-ip').replace(/^.*:/, '') || 'client';
+    const clientIp = normalizeIp(req.ip || req.socket.remoteAddress);
     const bodySession = typeof req.body?.sessionId === 'string' ? req.body.sessionId.trim() : '';
     const headerSession = typeof req.headers['x-session-id'] === 'string' ? (req.headers['x-session-id'] as string).trim() : '';
 
@@ -480,7 +631,7 @@ function createSessionQuotaMiddleware(config: SessionQuotaConfig): express.Reque
  * Requires X-Admin-Key or Authorization: Bearer header matching server secret.
  * Rejects query parameters to prevent log leakage (CWE-598).
  */
-function requireAdminAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
+export function requireAdminAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
   if (req.query.adminKey || req.query['admin-key'] || req.query.key || req.query.token) {
     return res.status(400).json({
       success: false,
@@ -583,7 +734,7 @@ setInterval(() => {
       serverChatHistories.delete(id);
     }
   }
-}, 10 * 60 * 1000);
+}, 10 * 60 * 1000).unref();
 
 // Inappropriate words blocklist for children's application moderation
 const INAPPROPRIATE_WORDS = [
@@ -1050,7 +1201,6 @@ const handlePlanBook: express.RequestHandler = async (req, res) => {
 
     const explicitTitle = typeof customTitle === 'string' ? customTitle.trim() : '';
     const cleanAuthor = typeof dedicationAuthor === 'string' ? dedicationAuthor.trim() : '';
-    const ai = getGenAI();
 
     let difficultyInstruction = '';
     if (difficulty === 'toddler') {
@@ -1204,28 +1354,45 @@ CRITICAL RULES:
       });
     }
 
+    let providerAttempts = 0;
+    let reservationHandled = false;
     let response;
     try {
-      response = await ai.models.generateContent({
-        model: 'gemini-3.8-flash',
-        contents: prompt,
-        config: schemaConfig,
-      });
-    } catch (primaryErr: any) {
-      if (isSafetyOrBadRequestError(primaryErr)) {
-        return res.status(400).json({
-          success: false,
-          error: 'This theme was flagged by content safety filters. Please try another kid-friendly theme.',
+      const ai = getGenAI();
+      try {
+        providerAttempts += 1;
+        response = await ai.models.generateContent({
+          model: 'gemini-3.8-flash',
+          contents: prompt,
+          config: schemaConfig,
+        });
+      } catch (primaryErr: any) {
+        if (isSafetyOrBadRequestError(primaryErr)) {
+          commitAiBudget(budgetReservation.reservationId, estimatedPlanCost * providerAttempts);
+          reservationHandled = true;
+          return res.status(400).json({
+            success: false,
+            error: 'This theme was flagged by content safety filters. Please try another kid-friendly theme.',
+          });
+        }
+        console.warn('gemini-3.8-flash planning high demand / error, attempting fallback to gemini-3.1-flash-lite:', primaryErr?.message);
+        providerAttempts += 1;
+        response = await ai.models.generateContent({
+          model: 'gemini-3.1-flash-lite',
+          contents: prompt,
+          config: schemaConfig,
         });
       }
-      console.warn('gemini-3.8-flash planning high demand / error, attempting fallback to gemini-3.1-flash-lite:', primaryErr?.message);
-      response = await ai.models.generateContent({
-        model: 'gemini-3.1-flash-lite',
-        contents: prompt,
-        config: schemaConfig,
-      });
+      commitAiBudget(budgetReservation.reservationId, estimatedPlanCost * providerAttempts);
+      reservationHandled = true;
     } finally {
-      commitAiBudget(budgetReservation.reservationId, estimatedPlanCost);
+      if (!reservationHandled) {
+        if (providerAttempts > 0) {
+          commitAiBudget(budgetReservation.reservationId, estimatedPlanCost * providerAttempts);
+        } else {
+          releaseAiBudgetReservation(budgetReservation.reservationId);
+        }
+      }
     }
 
     const parsed = JSON.parse(response.text || '{}');
@@ -1275,8 +1442,6 @@ app.post('/api/inspire-themes', inspirationRateLimiter, inspirationSessionQuota,
         return res.status(400).json({ success: false, error: nameCheck.reason });
       }
     }
-    const ai = getGenAI();
-
     const prompt = `You are an imaginative children's book author and coloring book designer.
 Generate a list of exactly 3 creative, trending, fun, and age-appropriate coloring book themes${
       cleanName ? ` inspired specifically for the child named "${cleanName}"` : ' for an adventurous child'
@@ -1305,8 +1470,12 @@ Guidelines:
       });
     }
 
+    let providerAttempts = 0;
+    let reservationHandled = false;
     let response;
     try {
+      const ai = getGenAI();
+      providerAttempts += 1;
       response = await ai.models.generateContent({
         model: 'gemini-3.8-flash',
         contents: prompt,
@@ -1338,8 +1507,16 @@ Guidelines:
           },
         },
       });
-    } finally {
       commitAiBudget(budgetReservation.reservationId, estimatedThemesCost);
+      reservationHandled = true;
+    } finally {
+      if (!reservationHandled) {
+        if (providerAttempts > 0) {
+          commitAiBudget(budgetReservation.reservationId, estimatedThemesCost);
+        } else {
+          releaseAiBudgetReservation(budgetReservation.reservationId);
+        }
+      }
     }
 
     const parsed = JSON.parse(response.text || '{}');
@@ -1424,8 +1601,6 @@ app.post('/api/generate-image', imageRateLimiter, imageSessionQuota, async (req,
       return res.status(400).json({ success: false, error: promptCheck.reason });
     }
 
-    const ai = getGenAI();
-
     // Adjust prompt directives based on chosen art style
     let artStyleDirective = '';
     if (artStyle === 'kawaii') {
@@ -1483,48 +1658,65 @@ app.post('/api/generate-image', imageRateLimiter, imageSessionQuota, async (req,
       });
     }
 
+    let providerAttempts = 0;
+    let reservationHandled = false;
     let response;
     try {
-      response = await ai.models.generateContent({
-        model: primaryModel,
-        contents: {
-          parts: [{ text: enhancedPrompt }],
-        },
-        config: {
-          imageConfig: {
-            aspectRatio: (aspectRatio as any) || '3:4',
-            imageSize: (chosenSize as any) || '1K',
+      const ai = getGenAI();
+      try {
+        providerAttempts += 1;
+        response = await ai.models.generateContent({
+          model: primaryModel,
+          contents: {
+            parts: [{ text: enhancedPrompt }],
           },
-        },
-      });
-    } catch (primaryErr: any) {
-      // If prompt violated content policy or safety filters, DO NOT retry on secondary model!
-      if (isSafetyOrBadRequestError(primaryErr)) {
-        console.warn('Image prompt flagged by safety filter, aborting retry:', primaryErr?.message);
-        return res.status(400).json({
-          success: false,
-          error: 'This scene was flagged by content safety filters. Please try a different kid-friendly idea.',
-          isSafetyBlocked: true,
+          config: {
+            imageConfig: {
+              aspectRatio: (aspectRatio as any) || '3:4',
+              imageSize: (chosenSize as any) || '1K',
+            },
+          },
+        });
+      } catch (primaryErr: any) {
+        // If prompt violated content policy or safety filters, DO NOT retry on secondary model!
+        if (isSafetyOrBadRequestError(primaryErr)) {
+          console.warn('Image prompt flagged by safety filter, aborting retry:', primaryErr?.message);
+          commitAiBudget(budgetReservation.reservationId, estimatedImageCost * providerAttempts);
+          reservationHandled = true;
+          return res.status(400).json({
+            success: false,
+            error: 'This scene was flagged by content safety filters. Please try a different kid-friendly idea.',
+            isSafetyBlocked: true,
+          });
+        }
+
+        console.warn(`${primaryModel} call encountered issue, attempting secondary fallback:`, primaryErr?.message);
+        // Only fallback on transient network/overload errors
+        const fallbackModel = primaryModel === 'gemini-3-pro-image' ? 'gemini-3.1-flash-lite-image' : 'gemini-3-pro-image';
+        providerAttempts += 1;
+        response = await ai.models.generateContent({
+          model: fallbackModel,
+          contents: {
+            parts: [{ text: enhancedPrompt }],
+          },
+          config: {
+            imageConfig: {
+              aspectRatio: (aspectRatio as any) || '3:4',
+              imageSize: (chosenSize as any) || '1K',
+            },
+          },
         });
       }
-
-      console.warn(`${primaryModel} call encountered issue, attempting secondary fallback:`, primaryErr?.message);
-      // Only fallback on transient network/overload errors
-      const fallbackModel = primaryModel === 'gemini-3-pro-image' ? 'gemini-3.1-flash-lite-image' : 'gemini-3-pro-image';
-      response = await ai.models.generateContent({
-        model: fallbackModel,
-        contents: {
-          parts: [{ text: enhancedPrompt }],
-        },
-        config: {
-          imageConfig: {
-            aspectRatio: (aspectRatio as any) || '3:4',
-            imageSize: (chosenSize as any) || '1K',
-          },
-        },
-      });
+      commitAiBudget(budgetReservation.reservationId, estimatedImageCost * providerAttempts);
+      reservationHandled = true;
     } finally {
-      commitAiBudget(budgetReservation.reservationId, estimatedImageCost);
+      if (!reservationHandled) {
+        if (providerAttempts > 0) {
+          commitAiBudget(budgetReservation.reservationId, estimatedImageCost * providerAttempts);
+        } else {
+          releaseAiBudgetReservation(budgetReservation.reservationId);
+        }
+      }
     }
 
     // Extract image from parts
@@ -1622,10 +1814,13 @@ app.post('/api/generate-cover', imageRateLimiter, coverSessionQuota, async (req,
       });
     }
 
+    let providerAttempts = 0;
+    let reservationHandled = false;
     try {
       const ai = getGenAI();
       let response;
       try {
+        providerAttempts += 1;
         response = await ai.models.generateContent({
           model: 'gemini-3-pro-image',
           contents: {
@@ -1641,6 +1836,8 @@ app.post('/api/generate-cover', imageRateLimiter, coverSessionQuota, async (req,
       } catch (primaryErr: any) {
         if (isSafetyOrBadRequestError(primaryErr)) {
           console.warn('Cover prompt flagged by safety filter, using instant vector art');
+          commitAiBudget(budgetReservation.reservationId, estimatedCoverCost * providerAttempts);
+          reservationHandled = true;
           const vectorSvg = createThematicCoverSvg(rawTheme, rawChildName, difficulty, styleVariant);
           return res.json({
             success: true,
@@ -1650,6 +1847,7 @@ app.post('/api/generate-cover', imageRateLimiter, coverSessionQuota, async (req,
           });
         }
         console.warn('gemini-3-pro-image cover failed, trying gemini-3.1-flash-lite-image fallback:', primaryErr?.message);
+        providerAttempts += 1;
         response = await ai.models.generateContent({
           model: 'gemini-3.1-flash-lite-image',
           contents: {
@@ -1662,9 +1860,9 @@ app.post('/api/generate-cover', imageRateLimiter, coverSessionQuota, async (req,
             },
           },
         });
-      } finally {
-        commitAiBudget(budgetReservation.reservationId, estimatedCoverCost);
       }
+      commitAiBudget(budgetReservation.reservationId, estimatedCoverCost * providerAttempts);
+      reservationHandled = true;
 
       const parts = response.candidates?.[0]?.content?.parts || [];
       for (const part of parts) {
@@ -1676,6 +1874,14 @@ app.post('/api/generate-cover', imageRateLimiter, coverSessionQuota, async (req,
       }
     } catch (apiErr: any) {
       console.warn('AI cover generation failed, generating instant thematic vector illustration:', apiErr?.message);
+    } finally {
+      if (!reservationHandled) {
+        if (providerAttempts > 0) {
+          commitAiBudget(budgetReservation.reservationId, estimatedCoverCost * providerAttempts);
+        } else {
+          releaseAiBudgetReservation(budgetReservation.reservationId);
+        }
+      }
     }
 
     if (imageUrl) {
@@ -1929,16 +2135,20 @@ app.post('/api/photo-to-line-art', imageRateLimiter, photoToArtSessionQuota, asy
       });
     }
 
-    const ai = getGenAI();
+    let providerAttempts = 0;
+    let reservationHandled = false;
+    let response;
+    try {
+      const ai = getGenAI();
 
-    let subjectPrompt = `Turn the ${subjectType} from this reference photo into the beloved starring hero named "${childName}" in a children's coloring book scene set in: ${sceneSetting} (${theme} theme).`;
-    if (subjectType === 'pet') {
-      subjectPrompt = `Turn the adorable pet from this reference photo into a playful cartoon animal hero starring in: ${sceneSetting} (${theme} theme). Keep their distinct fur pattern, ears, expression, and personality markings recognizable.`;
-    } else if (subjectType === 'toy') {
-      subjectPrompt = `Turn the toy / companion from this reference photo into a magical living character starring in: ${sceneSetting} (${theme} theme).`;
-    }
+      let subjectPrompt = `Turn the ${subjectType} from this reference photo into the beloved starring hero named "${childName}" in a children's coloring book scene set in: ${sceneSetting} (${theme} theme).`;
+      if (subjectType === 'pet') {
+        subjectPrompt = `Turn the adorable pet from this reference photo into a playful cartoon animal hero starring in: ${sceneSetting} (${theme} theme). Keep their distinct fur pattern, ears, expression, and personality markings recognizable.`;
+      } else if (subjectType === 'toy') {
+        subjectPrompt = `Turn the toy / companion from this reference photo into a magical living character starring in: ${sceneSetting} (${theme} theme).`;
+      }
 
-    const promptText = `${subjectPrompt}
+      const promptText = `${subjectPrompt}
 Style directives:
 - Ultra-clean, bold black outlines suitable for a children's coloring book.
 - Completely pure white background.
@@ -1948,58 +2158,70 @@ Style directives:
 - ${artStyle === 'kawaii' ? 'Kawaii Japanese cute style with bubbly rounded outlines and big sweet eyes.' : artStyle === 'comic' ? 'Dynamic comic book action ink style with heroic silhouettes.' : artStyle === 'manga-chibi' ? 'Manga chibi anime style with cute proportions and expressive eyes.' : artStyle === 'geometric-mandala' ? 'Geometric mandala pattern style with ornamental motifs.' : artStyle === 'vintage-woodcut' ? 'Vintage fairy-tale engraving style with antique storybook ink outlines.' : artStyle === 'retro-cartoon' ? '1930s rubber-hose cartoon animation style with bouncy noodle arms and pie eyes.' : 'Classic storybook coloring page style with clean bold outlines.'}
 - ${difficulty === 'toddler' ? 'Simple thick lines for toddlers with giant shapes.' : difficulty === 'intricate' ? 'Intricate decorative patterns and details for older kids.' : 'Classic crisp children\'s coloring book page.'}`;
 
-    let response;
-    try {
-      response = await ai.models.generateContent({
-        model: 'gemini-3-pro-image',
-        contents: {
-          parts: [
-            {
-              inlineData: {
-                mimeType,
-                data: base64Data,
+      try {
+        providerAttempts += 1;
+        response = await ai.models.generateContent({
+          model: 'gemini-3-pro-image',
+          contents: {
+            parts: [
+              {
+                inlineData: {
+                  mimeType,
+                  data: base64Data,
+                },
               },
-            },
-            { text: promptText },
-          ],
-        },
-        config: {
-          imageConfig: {
-            aspectRatio: '3:4',
-            imageSize: '1K',
+              { text: promptText },
+            ],
           },
-        },
-      });
-    } catch (primaryErr: any) {
-      if (isSafetyOrBadRequestError(primaryErr)) {
-        return res.status(400).json({
-          success: false,
-          error: 'This photo or prompt could not be processed due to safety guidelines. Please try a different photo.',
+          config: {
+            imageConfig: {
+              aspectRatio: '3:4',
+              imageSize: '1K',
+            },
+          },
+        });
+      } catch (primaryErr: any) {
+        if (isSafetyOrBadRequestError(primaryErr)) {
+          commitAiBudget(budgetReservation.reservationId, estimatedPhotoCost * providerAttempts);
+          reservationHandled = true;
+          return res.status(400).json({
+            success: false,
+            error: 'This photo or prompt could not be processed due to safety guidelines. Please try a different photo.',
+          });
+        }
+        console.warn('Pro image preview failed for photo-to-art, trying flash image fallback:', primaryErr?.message);
+        providerAttempts += 1;
+        response = await ai.models.generateContent({
+          model: 'gemini-3.1-flash-lite-image',
+          contents: {
+            parts: [
+              {
+                inlineData: {
+                  mimeType,
+                  data: base64Data,
+                },
+              },
+              { text: promptText },
+            ],
+          },
+          config: {
+            imageConfig: {
+              aspectRatio: '3:4',
+              imageSize: '1K',
+            },
+          },
         });
       }
-      console.warn('Pro image preview failed for photo-to-art, trying flash image fallback:', primaryErr?.message);
-      response = await ai.models.generateContent({
-        model: 'gemini-3.1-flash-lite-image',
-        contents: {
-          parts: [
-            {
-              inlineData: {
-                mimeType,
-                data: base64Data,
-              },
-            },
-            { text: promptText },
-          ],
-        },
-        config: {
-          imageConfig: {
-            aspectRatio: '3:4',
-            imageSize: '1K',
-          },
-        },
-      });
+      commitAiBudget(budgetReservation.reservationId, estimatedPhotoCost * providerAttempts);
+      reservationHandled = true;
     } finally {
-      commitAiBudget(budgetReservation.reservationId, estimatedPhotoCost);
+      if (!reservationHandled) {
+        if (providerAttempts > 0) {
+          commitAiBudget(budgetReservation.reservationId, estimatedPhotoCost * providerAttempts);
+        } else {
+          releaseAiBudgetReservation(budgetReservation.reservationId);
+        }
+      }
     }
 
     const parts = response.candidates?.[0]?.content?.parts || [];
@@ -2106,8 +2328,6 @@ app.post('/api/chat', chatRateLimiter, chatSessionQuota, async (req, res) => {
       }
     }
 
-    const ai = getGenAI();
-
     // Select system instruction strictly bounded to coloring book creativity
     let systemInstruction = `You are "ColorCraft Assistant", a friendly, enthusiastic, and kid-appropriate coloring book co-creator.
 You strictly assist parents, educators, and children in brainstorming coloring book themes, writing short rhyming story lines, and creating scene ideas.
@@ -2165,8 +2385,12 @@ STRICT DOMAIN BOUNDARIES:
       });
     }
 
+    let providerAttempts = 0;
+    let reservationHandled = false;
     let replyText = '';
     try {
+      const ai = getGenAI();
+      providerAttempts += 1;
       const response = await ai.models.generateContent({
         model: selectedModel,
         contents,
@@ -2177,8 +2401,16 @@ STRICT DOMAIN BOUNDARIES:
       });
 
       replyText = response.text || '';
-    } finally {
       commitAiBudget(budgetReservation.reservationId, estimatedChatCost);
+      reservationHandled = true;
+    } finally {
+      if (!reservationHandled) {
+        if (providerAttempts > 0) {
+          commitAiBudget(budgetReservation.reservationId, estimatedChatCost);
+        } else {
+          releaseAiBudgetReservation(budgetReservation.reservationId);
+        }
+      }
     }
 
     // Append genuine server-generated model response to server-controlled history
@@ -2242,4 +2474,6 @@ async function startServer() {
   });
 }
 
-startServer();
+if (process.env.NODE_ENV !== 'test' && !process.argv.some((arg) => arg.includes('.test.'))) {
+  startServer();
+}

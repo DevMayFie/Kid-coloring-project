@@ -35,6 +35,8 @@ export function getClientSessionId(): string {
 /**
  * Initializes or refreshes the server-issued, signed anonymous session token.
  * Prevents arbitrary client ID forgery and binds rate limits securely.
+ * Safely clears syncPromise on handshake failures so subsequent requests can retry.
+ * Prevents duplicate concurrent handshakes by sharing in-flight promise.
  */
 export async function initServerSession(): Promise<string> {
   if (typeof window === 'undefined') return 'server-render-session';
@@ -52,17 +54,32 @@ export async function initServerSession(): Promise<string> {
       });
       if (res.ok) {
         const data = await res.json();
-        if (data.success && data.sessionId) {
+        if (data && data.success && data.sessionId) {
           localStorage.setItem(SESSION_KEY, data.sessionId);
           return data.sessionId;
         }
       }
+      // If server responded with an error, clear syncPromise so later calls can retry
+      syncPromise = null;
     } catch (err) {
       console.warn('Could not complete server session handshake:', err);
+      // If network fetch threw, clear syncPromise so later calls can retry
+      syncPromise = null;
     }
     return getClientSessionId();
   })();
 
+  return syncPromise;
+}
+
+/**
+ * Resets the in-flight session sync promise (for unit tests and explicit reset).
+ */
+export function resetSessionSyncForTesting(): void {
+  syncPromise = null;
+}
+
+export function getSyncPromiseForTesting(): Promise<string> | null {
   return syncPromise;
 }
 

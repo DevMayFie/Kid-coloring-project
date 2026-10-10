@@ -1,6 +1,32 @@
-import { describe, it } from 'node:test';
+import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'crypto';
+import {
+  checkAiBudgetCircuitBreaker,
+  reserveAiBudget,
+  commitAiBudget,
+  releaseAiBudgetReservation,
+  recordAiUsageEstimate,
+  getBudgetState,
+  resetBudgetStateForTesting,
+  setBudgetStoreForTesting,
+  activeReservations,
+  createSignedSessionId,
+  verifySignedSessionId,
+  getAnonymousSessionId,
+  normalizeIp,
+  createConsentToken,
+  verifyConsentToken,
+  requireAdminAuth,
+  createSessionQuotaMiddleware,
+  sessionQuotaStore,
+} from '../server';
+import {
+  initServerSession,
+  getClientSessionId,
+  resetSessionSyncForTesting,
+  getSyncPromiseForTesting,
+} from '../src/utils/session';
 import {
   storageReady,
   initStorage,
@@ -8,17 +34,33 @@ import {
   getStorageInitError,
   saveAutosaveToDb,
   createSafeStore,
+  resetStorageStateForTesting,
 } from '../src/utils/dbStorage';
 
-// We import server functions and handlers for focused testing
-const TEST_SECRET = 'test-secret-at-least-32-bytes-long-for-hmac-sha256-safety';
-
-// Mock IndexedDB for Node.js test environment
+// Setup Mock IndexedDB for testing
 function setupMockIndexedDB(shouldFail = false) {
   const storeData = new Map<string, any>();
+  const existingStores = new Set<string>(['coloring_books', 'privacy_consent', 'keyval']);
+  let dbVersion = 1;
+
   const mockDB = {
-    createObjectStore: () => {},
-    transaction: () => {
+    get version() {
+      return dbVersion;
+    },
+    objectStoreNames: {
+      contains: (s: string) => existingStores.has(s),
+    },
+    createObjectStore: (s: string) => {
+      existingStores.add(s);
+    },
+    close: () => {},
+    transaction: (stores: string | string[]) => {
+      const storeName = Array.isArray(stores) ? stores[0] : stores;
+      if (!existingStores.has(storeName)) {
+        const err = new Error("Failed to execute 'transaction' on 'IDBDatabase': One of the specified object stores was not found.");
+        err.name = 'NotFoundError';
+        throw err;
+      }
       const tx: any = {};
       setTimeout(() => tx.onsuccess?.(), 0);
       return {
@@ -48,237 +90,328 @@ function setupMockIndexedDB(shouldFail = false) {
   };
 
   (globalThis as any).indexedDB = {
-    open: () => {
+    open: (name: string, ver?: number) => {
+      if (ver && ver > dbVersion) {
+        dbVersion = ver;
+      }
       const req: any = { result: mockDB };
       setTimeout(() => {
         if (shouldFail) {
-          req.error = new Error('IndexedDB open permission denied');
+          req.error = new Error('IndexedDB permission denied or unavailable');
           req.onerror?.();
         } else {
-          req.onupgradeneeded?.();
+          if (ver && ver > 1) {
+            req.onupgradeneeded?.();
+          }
           req.onsuccess?.();
         }
       }, 0);
       return req;
     },
   };
+
+  return { storeData, existingStores };
 }
 
-describe('Production Readiness & Security Test Suite', () => {
+describe('ColorKid Production Readiness & Security Test Suite', () => {
+  beforeEach(() => {
+    resetBudgetStateForTesting(0, 0);
+    resetStorageStateForTesting();
+    resetSessionSyncForTesting();
+    sessionQuotaStore.clear();
+  });
+
   describe('Priority 1: AI Spending Budget & Concurrency Locks', () => {
-    it('exhausted budget rejects requests with HTTP 429 and safe error', () => {
-      // Simulate budget logic
-      const DAILY_BUDGET = 50.0;
-      let dailyCost = 50.0; // Exhausted
-      let reservedCost = 0.0;
+    it('exhausted budget rejects requests via checkAiBudgetCircuitBreaker and reserveAiBudget', () => {
+      // Simulate budget at the limit ($50.00 daily budget)
+      resetBudgetStateForTesting(50.00, 0);
 
-      function checkBudget(reqCost: number) {
-        if (dailyCost + reservedCost + reqCost > DAILY_BUDGET) {
-          return {
-            allowed: false,
-            status: 429,
-            error: `Daily AI usage spending budget limit ($${DAILY_BUDGET.toFixed(2)} estimated) reached. Requests are safely paused to prevent unexpected provider charges.`,
-            budgetExceeded: true,
-          };
-        }
-        return { allowed: true };
-      }
-
-      const check = checkBudget(0.04);
+      const check = checkAiBudgetCircuitBreaker(0.04);
       assert.equal(check.allowed, false);
-      assert.equal(check.status, 429);
-      assert.equal(check.budgetExceeded, true);
-      assert.match(check.error, /budget limit.*reached/i);
+      assert.match(check.reason || '', /daily ai usage spending budget limit.*reached/i);
+
+      const reservation = reserveAiBudget(0.04);
+      assert.equal(reservation.allowed, false);
+      assert.match(reservation.reason || '', /budget limit.*reached/i);
     });
 
-    it('concurrent reservations prevent race condition overspending', () => {
-      const DAILY_BUDGET = 1.0;
-      let dailyCost = 0.95;
-      let reservedCost = 0.0;
-      const reservations: string[] = [];
+    it('concurrent reservations prevent race-condition overspending', () => {
+      // Set budget close to $50.00 limit ($49.98 used, limit is 50.00)
+      resetBudgetStateForTesting(49.98, 0);
 
-      function tryReserve(cost: number): boolean {
-        if (dailyCost + reservedCost + cost > DAILY_BUDGET) {
-          return false;
-        }
-        reservedCost += cost;
-        reservations.push(`res_${reservations.length}`);
-        return true;
-      }
+      // First concurrent request reserves $0.015 (total projected: 49.98 + 0.015 = 49.995 <= 50.00)
+      const res1 = reserveAiBudget(0.015);
+      assert.equal(res1.allowed, true);
+      assert.ok(res1.reservationId);
+      assert.equal(activeReservations.size, 1);
 
-      // First request costs 0.04 -> 0.95 + 0.04 = 0.99 <= 1.00 (allowed)
-      const res1 = tryReserve(0.04);
-      assert.equal(res1, true);
-      assert.equal(reservedCost, 0.04);
+      // Second concurrent request reserves $0.015 in-flight (projected: 49.98 + 0.015 + 0.015 = 50.01 > 50.00)
+      const res2 = reserveAiBudget(0.015);
+      assert.equal(res2.allowed, false);
+      assert.match(res2.reason || '', /budget limit.*reached/i);
 
-      // Second concurrent request arrives while res1 is in flight (costs 0.04)
-      // 0.95 + 0.04 + 0.04 = 1.03 > 1.00 -> Must be rejected!
-      const res2 = tryReserve(0.04);
-      assert.equal(res2, false);
+      // Releasing res1 unblocks capacity
+      releaseAiBudgetReservation(res1.reservationId);
+      assert.equal(activeReservations.size, 0);
 
-      // Total committed does not exceed 1.00
-      assert.ok(dailyCost + reservedCost <= DAILY_BUDGET);
+      // Now a retry can succeed
+      const resRetry = reserveAiBudget(0.015);
+      assert.equal(resRetry.allowed, true);
+      commitAiBudget(resRetry.reservationId, 0.015);
     });
 
-    it('admin usage-budget endpoint requires valid authentication and documents estimation nature', () => {
-      const ADMIN_SECRET = 'super-secret-admin-key-2026';
+    it('accounts for every paid provider attempt, including fallback model calls', () => {
+      resetBudgetStateForTesting(0, 0);
 
-      function authenticateAdmin(headers: Record<string, string>, query: Record<string, string>) {
-        if (query.adminKey || query['admin-key'] || query.key || query.token) {
-          return { status: 400, error: 'Query param credentials forbidden (CWE-598)' };
-        }
-        const auth = headers['x-admin-key'] || (headers['authorization']?.startsWith('Bearer ') ? headers['authorization'].slice(7) : null);
-        if (!auth) {
-          return { status: 401, error: 'Unauthorized: missing admin key' };
-        }
-        const bAuth = Buffer.from(auth);
-        const bTarget = Buffer.from(ADMIN_SECRET);
-        if (bAuth.length !== bTarget.length || !crypto.timingSafeEqual(bAuth, bTarget)) {
-          return { status: 401, error: 'Unauthorized: invalid credentials' };
-        }
-        return {
-          status: 200,
-          body: {
-            success: true,
-            estimateDisclaimer: 'Internal software estimate only. Does not guarantee a hard spending cap at the AI provider.',
-          },
-        };
-      }
+      const estimatedCost = 0.002;
+      const budgetRes = reserveAiBudget(estimatedCost);
+      assert.equal(budgetRes.allowed, true);
 
-      // Test missing auth
-      assert.equal(authenticateAdmin({}, {}).status, 401);
+      // Simulate primary attempt failed, followed by fallback attempt
+      const attempts = 2; // Primary + Fallback
+      commitAiBudget(budgetRes.reservationId, estimatedCost * attempts);
 
-      // Test query parameter rejection (CWE-598)
-      assert.equal(authenticateAdmin({}, { adminKey: ADMIN_SECRET }).status, 400);
+      const state = getBudgetState();
+      assert.equal(state.dailyEstimatedCostUsd, 0.004);
+      assert.equal(state.dailyRequestsTracked, 1);
+      assert.equal(state.dailyReservedCostUsd, 0);
+    });
 
-      // Test invalid auth
-      assert.equal(authenticateAdmin({ 'x-admin-key': 'wrong-key' }, {}).status, 401);
+    it('cleans up reservations safely when failure occurs before contacting provider', () => {
+      resetBudgetStateForTesting(0, 0);
 
-      // Test valid header auth
-      const validRes = authenticateAdmin({ 'x-admin-key': ADMIN_SECRET }, {});
-      assert.equal(validRes.status, 200);
-      assert.match(validRes.body.estimateDisclaimer, /estimate only/i);
+      const res = reserveAiBudget(0.04);
+      assert.equal(res.allowed, true);
+      assert.equal(getBudgetState().dailyReservedCostUsd, 0.04);
+
+      // Simulate error before provider contact (e.g. invalid arguments or getGenAI error)
+      releaseAiBudgetReservation(res.reservationId);
+
+      const state = getBudgetState();
+      assert.equal(state.dailyReservedCostUsd, 0);
+      assert.equal(state.dailyEstimatedCostUsd, 0);
+    });
+
+    it('admin usage-budget requires valid authentication and rejects query parameters (CWE-598)', () => {
+      process.env.ADMIN_KEY = 'test-secure-admin-key-2026';
+
+      // 1. Query parameter token rejected
+      let status1 = 200;
+      let body1: any = null;
+      const req1: any = { query: { adminKey: 'test-secure-admin-key-2026' }, headers: {} };
+      const res1: any = {
+        status: (s: number) => { status1 = s; return res1; },
+        json: (b: any) => { body1 = b; return res1; },
+      };
+      requireAdminAuth(req1, res1, () => {});
+      assert.equal(status1, 400);
+      assert.match(body1.error, /must not be passed in url query parameters/i);
+
+      // 2. Missing admin key
+      let status2 = 200;
+      let body2: any = null;
+      const req2: any = { query: {}, headers: {} };
+      const res2: any = {
+        status: (s: number) => { status2 = s; return res2; },
+        json: (b: any) => { body2 = b; return res2; },
+      };
+      requireAdminAuth(req2, res2, () => {});
+      assert.equal(status2, 401);
+      assert.match(body2.error, /unauthorized.*required/i);
+
+      // 3. Wrong admin key
+      let status3 = 200;
+      const req3: any = { query: {}, headers: { 'x-admin-key': 'wrong-secret' } };
+      const res3: any = {
+        status: (s: number) => { status3 = s; return res3; },
+        json: () => res3,
+      };
+      requireAdminAuth(req3, res3, () => {});
+      assert.equal(status3, 401);
+
+      // 4. Valid admin key via X-Admin-Key header
+      let nextCalled = false;
+      const req4: any = { query: {}, headers: { 'x-admin-key': 'test-secure-admin-key-2026' } };
+      const res4: any = {};
+      requireAdminAuth(req4, res4, () => { nextCalled = true; });
+      assert.equal(nextCalled, true);
+    });
+
+    it('budget state is persistent and shared across store updates', () => {
+      let savedState: any = null;
+      const mockStore = {
+        getState: () => savedState || {
+          dailyEstimatedCostUsd: 12.50,
+          dailyReservedCostUsd: 0,
+          dailyRequestsTracked: 15,
+          dailyCostResetTimestamp: Date.now() + 86400000,
+        },
+        saveState: (st: any) => { savedState = st; },
+      };
+
+      setBudgetStoreForTesting(mockStore as any);
+      const state = getBudgetState();
+      assert.equal(state.dailyEstimatedCostUsd, 12.50);
+      assert.equal(state.dailyRequestsTracked, 15);
     });
   });
 
-  describe('Priority 2: Session & Quota Abuse Prevention', () => {
-    function signSession(rawId: string, secret: string) {
-      const sig = crypto.createHmac('sha256', secret).update(rawId).digest('base64url');
-      return `${rawId}.${sig}`;
-    }
+  describe('Priority 2: Session Quota, IP Normalization & Abuse Prevention', () => {
+    it('generates and cryptographically verifies server-issued signed sessions', () => {
+      const sessionId = createSignedSessionId();
+      assert.ok(sessionId.startsWith('sess_'));
+      assert.ok(sessionId.includes('.'));
 
-    function verifySession(token: string | undefined, secret: string, maxAgeMs = 24 * 60 * 60 * 1000) {
-      if (!token || typeof token !== 'string') return { valid: false, reason: 'missing' };
-      const parts = token.split('.');
-      if (parts.length !== 2) return { valid: false, reason: 'malformed' };
-      const [rawId, sig] = parts;
-      if (!rawId.startsWith('sess_')) return { valid: false, reason: 'invalid prefix' };
-
-      const rawParts = rawId.split('_');
-      if (rawParts.length < 3) return { valid: false, reason: 'invalid timestamp format' };
-      const sessionCreatedAt = parseInt(rawParts[1], 36);
-      if (isNaN(sessionCreatedAt)) return { valid: false, reason: 'nan timestamp' };
-
-      const now = Date.now();
-      if (now - sessionCreatedAt > maxAgeMs) {
-        return { valid: false, reason: 'expired' };
-      }
-      if (sessionCreatedAt > now + 60000) {
-        return { valid: false, reason: 'future' };
-      }
-
-      const expectedSig = crypto.createHmac('sha256', secret).update(rawId).digest('base64url');
-      const sigBuf = Buffer.from(sig);
-      const expBuf = Buffer.from(expectedSig);
-      if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
-        return { valid: false, reason: 'tampered' };
-      }
-      return { valid: true, rawId };
-    }
-
-    it('verifies valid sessions and rejects invalid, tampered, and expired tokens', () => {
-      const now = Date.now();
-      const validRaw = `sess_${now.toString(36)}_${crypto.randomBytes(8).toString('hex')}`;
-      const validToken = signSession(validRaw, TEST_SECRET);
-
-      // Valid session
-      assert.equal(verifySession(validToken, TEST_SECRET).valid, true);
+      const verified = verifySignedSessionId(sessionId);
+      assert.equal(verified.valid, true);
+      assert.ok(verified.rawId);
 
       // Tampered signature
-      const tamperedToken = `${validRaw}.fakeSig12345`;
-      assert.equal(verifySession(tamperedToken, TEST_SECRET).valid, false);
+      const tampered = `${verified.rawId}.fakeSignature123`;
+      assert.equal(verifySignedSessionId(tampered).valid, false);
 
-      // Wrong secret
-      assert.equal(verifySession(validToken, 'different-secret-for-testing').valid, false);
+      // Missing / malformed
+      assert.equal(verifySignedSessionId('').valid, false);
+      assert.equal(verifySignedSessionId('not_a_session').valid, false);
+    });
 
-      // Expired token (25 hours ago)
-      const expiredTime = now - 25 * 60 * 60 * 1000;
-      const expiredRaw = `sess_${expiredTime.toString(36)}_${crypto.randomBytes(8).toString('hex')}`;
-      const expiredToken = signSession(expiredRaw, TEST_SECRET);
-      const expiredCheck = verifySession(expiredToken, TEST_SECRET);
-      assert.equal(expiredCheck.valid, false);
-      assert.equal(expiredCheck.reason, 'expired');
+    it('correctly normalizes IPv4, IPv4-mapped IPv6, and true IPv6 addresses without hextet stripping', () => {
+      // IPv4
+      assert.equal(normalizeIp('192.168.1.100'), '192.168.1.100');
 
-      // Missing / empty token
-      assert.equal(verifySession('', TEST_SECRET).valid, false);
-      assert.equal(verifySession(undefined, TEST_SECRET).valid, false);
+      // IPv4-mapped IPv6
+      assert.equal(normalizeIp('::ffff:192.0.2.1'), '192.0.2.1');
+
+      // Localhost IPv6
+      assert.equal(normalizeIp('::1'), '127.0.0.1');
+
+      // True IPv6 addresses MUST preserve all hextets and not collapse to last digits
+      assert.equal(normalizeIp('2001:0db8:85a3::7334'), '2001:0db8:85a3::7334');
+      assert.equal(normalizeIp('2001:db8::1'), '2001:db8::1');
+      assert.equal(normalizeIp('2001:db8::2'), '2001:db8::2');
+
+      // Ensure distinct IPv6 clients do not collide
+      assert.notEqual(normalizeIp('2001:db8::1'), normalizeIp('2001:db8::2'));
     });
 
     it('new session IDs cannot reset quota under dual-layer IP envelope', () => {
-      const quotaStore = new Map<string, { count: number; resetAt: number }>();
-      const clientIp = '192.168.1.100';
-      const maxRequests = 2;
+      const quotaMw = createSessionQuotaMiddleware({
+        windowMinutes: 10,
+        maxRequests: 2,
+        endpointName: 'Test Image',
+      });
 
-      function checkQuota(ip: string, rawSessionId: string | undefined): { allowed: boolean; remaining: number } {
-        const ipKey = `Image:ip:${ip}`;
-        let ipRecord = quotaStore.get(ipKey);
-        if (!ipRecord) {
-          ipRecord = { count: 1, resetAt: Date.now() + 60000 };
-          quotaStore.set(ipKey, ipRecord);
-        } else {
-          ipRecord.count += 1;
-        }
-
-        let sessRecord = { count: 1 };
-        if (rawSessionId) {
-          const sessKey = `Image:sess:${rawSessionId}`;
-          let rec = quotaStore.get(sessKey);
-          if (!rec) {
-            rec = { count: 1, resetAt: Date.now() + 60000 };
-            quotaStore.set(sessKey, rec);
-          } else {
-            rec.count += 1;
-          }
-          sessRecord = rec;
-        }
-
-        const currentUsage = Math.max(ipRecord.count, sessRecord.count);
-        return {
-          allowed: currentUsage <= maxRequests,
-          remaining: Math.max(0, maxRequests - currentUsage),
-        };
-      }
+      const clientIp = '203.0.113.195';
 
       // Request 1 with Session A
-      const req1 = checkQuota(clientIp, 'sess_A');
-      assert.equal(req1.allowed, true);
-      assert.equal(req1.remaining, 1);
+      const sessionA = createSignedSessionId();
+      let status1 = 200;
+      const req1: any = { ip: clientIp, body: { sessionId: sessionA }, headers: {} };
+      const res1: any = { setHeader: () => {}, status: (s: number) => { status1 = s; return res1; }, json: () => res1 };
+      quotaMw(req1, res1, () => {});
+      assert.equal(status1, 200);
 
       // Request 2 with Session A
-      const req2 = checkQuota(clientIp, 'sess_A');
-      assert.equal(req2.allowed, true);
-      assert.equal(req2.remaining, 0);
+      let status2 = 200;
+      const req2: any = { ip: clientIp, body: { sessionId: sessionA }, headers: {} };
+      const res2: any = { setHeader: () => {}, status: (s: number) => { status2 = s; return res2; }, json: () => res2 };
+      quotaMw(req2, res2, () => {});
+      assert.equal(status2, 200);
 
-      // Request 3: Malicious client obtains brand new Session B to reset quota
-      const req3 = checkQuota(clientIp, 'sess_B');
-      assert.equal(req3.allowed, false); // Blocked because IP quota reached!
-      assert.equal(req3.remaining, 0);
+      // Request 3 with fresh Session B (malicious rotation attempt)
+      const sessionB = createSignedSessionId();
+      let status3 = 200;
+      let body3: any = null;
+      const req3: any = { ip: clientIp, body: { sessionId: sessionB }, headers: {} };
+      const res3: any = {
+        setHeader: () => {},
+        status: (s: number) => { status3 = s; return res3; },
+        json: (b: any) => { body3 = b; return res3; },
+      };
+      quotaMw(req3, res3, () => {});
+
+      // Must be rejected with 429 because IP envelope quota is reached!
+      assert.equal(status3, 429);
+      assert.match(body3.error, /creating new session ids cannot reset this limit/i);
+    });
+
+    it('clears syncPromise on failed session handshake so later calls can retry', async () => {
+      // Mock globalThis.fetch to simulate a failed request
+      const originalFetch = (globalThis as any).fetch;
+      try {
+        let fetchCalls = 0;
+        (globalThis as any).fetch = async () => {
+          fetchCalls++;
+          throw new Error('Network timeout contacting /api/session');
+        };
+        (globalThis as any).window = {};
+        (globalThis as any).localStorage = {
+          getItem: () => null,
+          setItem: () => {},
+        };
+
+        // First attempt fails
+        const id1 = await initServerSession();
+        assert.ok(id1.startsWith('sess_'));
+        assert.equal(fetchCalls, 1);
+
+        // syncPromise should be cleared on failure, allowing a second call to retry
+        assert.equal(getSyncPromiseForTesting(), null);
+
+        // Second attempt retries fetch
+        const id2 = await initServerSession();
+        assert.ok(id2.startsWith('sess_'));
+        assert.equal(fetchCalls, 2);
+      } finally {
+        (globalThis as any).fetch = originalFetch;
+        delete (globalThis as any).window;
+        delete (globalThis as any).localStorage;
+      }
+    });
+
+    it('shares in-flight syncPromise across concurrent handshake calls to prevent duplicate requests', async () => {
+      const originalFetch = (globalThis as any).fetch;
+      try {
+        let fetchCalls = 0;
+        const validServerSession = createSignedSessionId();
+
+        (globalThis as any).fetch = async () => {
+          fetchCalls++;
+          await new Promise((r) => setTimeout(r, 20));
+          return {
+            ok: true,
+            json: async () => ({ success: true, sessionId: validServerSession }),
+          };
+        };
+        (globalThis as any).window = {};
+        (globalThis as any).localStorage = {
+          getItem: () => null,
+          setItem: () => {},
+        };
+
+        // 3 simultaneous calls
+        const [res1, res2, res3] = await Promise.all([
+          initServerSession(),
+          initServerSession(),
+          initServerSession(),
+        ]);
+
+        assert.equal(res1, validServerSession);
+        assert.equal(res2, validServerSession);
+        assert.equal(res3, validServerSession);
+        assert.equal(fetchCalls, 1, 'Concurrent handshakes must share single fetch promise');
+      } finally {
+        (globalThis as any).fetch = originalFetch;
+        delete (globalThis as any).window;
+        delete (globalThis as any).localStorage;
+      }
     });
   });
 
-  describe('Priority 3: IndexedDB Storage & Hydration Safety', () => {
-    it('multiple concurrent calls to initStorage share one single promise', async () => {
+  describe('Priority 3: IndexedDB Safe Initialization & Hydration Protection', () => {
+    it('concurrent calls to initStorage share one single initialization promise', async () => {
       setupMockIndexedDB(false);
+
       const p1 = initStorage();
       const p2 = storageReady();
       const p3 = initStorage();
@@ -291,203 +424,89 @@ describe('Production Readiness & Security Test Suite', () => {
       assert.equal(getStorageInitError(), null);
     });
 
-    it('does not autosave default state over existing saved projects when hydration is incomplete or fails', () => {
-      // Simulate state in App.tsx
-      let isStorageHydratedFlag = false; // Hydration failed / pending
-      let autosaveCallCount = 0;
+    it('handles initialization failures explicitly and prevents overwriting saved projects', async () => {
+      setupMockIndexedDB(true); // Fails open/read
 
-      function triggerAutosaveEffect(book: { id: string }, hydrated: boolean) {
-        if (!hydrated) {
-          return; // Guarded!
-        }
-        autosaveCallCount++;
-      }
+      await assert.rejects(async () => {
+        await initStorage();
+      }, /IndexedDB permission denied/);
 
-      // Default empty/starter book exists
-      const defaultBook = { id: 'default-starter-book' };
+      assert.equal(isStorageHydrated(), false);
+      assert.ok(getStorageInitError());
 
-      // Attempt autosave when not hydrated
-      triggerAutosaveEffect(defaultBook, isStorageHydratedFlag);
-      assert.equal(autosaveCallCount, 0, 'Autosave must NOT run when hydration has not succeeded!');
-
-      // Only once hydration succeeds should autosave be allowed
-      isStorageHydratedFlag = true;
-      triggerAutosaveEffect(defaultBook, isStorageHydratedFlag);
-      assert.equal(autosaveCallCount, 1);
+      // Attempting autosave when storage failed must fail and NOT overwrite disk
+      const bookToSave: any = { id: 'book_123', pages: [] };
+      const saveResult = await saveAutosaveToDb(bookToSave).catch(() => false);
+      assert.equal(saveResult, false);
     });
 
-    it('createSafeStore automatically self-heals missing object stores to prevent NotFoundError', async () => {
-      // Mock IndexedDB where initial database has only 'keyval', missing 'coloring_books'
-      const existingStores = new Set<string>(['keyval']);
-      let dbVersion = 1;
-      const storeData = new Map<string, any>();
+    it('createSafeStore self-heals missing object stores on initial creation', async () => {
+      const { existingStores } = setupMockIndexedDB(false);
+      existingStores.delete('coloring_books'); // simulate missing store
 
-      (globalThis as any).indexedDB = {
-        open: (name: string, ver?: number) => {
-          if (ver && ver > dbVersion) {
-            dbVersion = ver;
-          }
-          const currentMockDB = {
-            version: dbVersion,
-            objectStoreNames: {
-              contains: (s: string) => existingStores.has(s),
-            },
-            createObjectStore: (s: string) => {
-              existingStores.add(s);
-            },
-            close: () => {},
-            transaction: (s: string) => {
-              if (!existingStores.has(s)) {
-                const notFound = new Error(`Failed to execute 'transaction' on 'IDBDatabase': One of the specified object stores was not found.`);
-                notFound.name = 'NotFoundError';
-                throw notFound;
-              }
-              const tx: any = {};
-              setTimeout(() => tx.onsuccess?.(), 0);
-              return {
-                objectStore: () => ({
-                  get: (k: string) => {
-                    const req: any = { result: storeData.get(k) };
-                    setTimeout(() => req.onsuccess?.(), 0);
-                    return req;
-                  },
-                  put: (v: any, k: string) => {
-                    storeData.set(k, v);
-                    const req: any = { result: undefined };
-                    setTimeout(() => req.onsuccess?.(), 0);
-                    return req;
-                  },
-                  transaction: tx,
-                }),
-              };
-            },
-          };
+      const safeStore = createSafeStore('ColorCraftDB', 'coloring_books', ['coloring_books', 'privacy_consent']);
 
-          const req: any = { result: currentMockDB };
-          setTimeout(() => {
-            if (ver && ver > 1) {
-              req.onupgradeneeded?.();
-            }
-            req.onsuccess?.();
-          }, 0);
-          return req;
-        },
-      };
-
-      const safeStore = createSafeStore('TestRecoveryDB', 'coloring_books', ['coloring_books', 'privacy_consent']);
-      
-      // Attempt read/write on store that was initially missing
-      let writeSuccess = false;
+      let writeRan = false;
       await safeStore('readwrite', (store) => {
-        store.put('test-book-data', 'test-key');
-        writeSuccess = true;
+        store.put({ id: 'test' }, 'test_key');
+        writeRan = true;
       });
 
-      assert.equal(writeSuccess, true);
-      assert.equal(existingStores.has('coloring_books'), true, 'coloring_books store should be created');
-      assert.equal(dbVersion >= 2, true, 'Database version should have incremented to add missing store');
+      assert.equal(writeRan, true);
+      assert.equal(existingStores.has('coloring_books'), true);
     });
   });
 
-  describe('Priority 4: Parental Consent Token & Security Headers', () => {
-    function createConsentToken(data: { role: string; childName: string; sessionId: string }, secret: string) {
-      const cleanSession = (data.sessionId || '').trim();
-      const cleanChild = (data.childName || '').trim().toLowerCase();
-      if (!cleanSession || !cleanChild) {
-        throw new Error('childName and sessionId are required');
-      }
-      const expiresAt = Date.now() + 4 * 60 * 60 * 1000;
-      const payload = JSON.stringify({
-        role: data.role,
-        childName: cleanChild,
-        sessionId: cleanSession,
-        expiresAt,
+  describe('Priority 4: Parental Consent Token & Security Verification', () => {
+    it('issues and validates parental consent token with strict child and session binding', () => {
+      const validSession = createSignedSessionId();
+      const { token } = createConsentToken({
+        guardianRole: 'parent',
+        childName: 'Emma',
+        sessionId: validSession,
       });
-      const b64 = Buffer.from(payload).toString('base64url');
-      const sig = crypto.createHmac('sha256', secret).update(b64).digest('base64url');
-      return `${b64}.${sig}`;
-    }
 
-    function verifyConsentToken(token: string | undefined, secret: string) {
-      if (!token) return { valid: false, reason: 'missing' };
-      const parts = token.split('.');
-      if (parts.length !== 2) return { valid: false, reason: 'malformed' };
-      const [b64, sig] = parts;
-      const expected = crypto.createHmac('sha256', secret).update(b64).digest('base64url');
-      const sigBuf = Buffer.from(sig);
-      const expBuf = Buffer.from(expected);
-      if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
-        return { valid: false, reason: 'invalid signature' };
-      }
-      const payload = JSON.parse(Buffer.from(b64, 'base64url').toString('utf8'));
-      if (payload.expiresAt < Date.now()) {
-        return { valid: false, reason: 'expired' };
-      }
-      return { valid: true, payload };
-    }
-
-    it('requires strict child-name matching and rejects using consent token for a different child', () => {
-      const tokenLeo = createConsentToken(
-        { role: 'parent', childName: 'Leo', sessionId: 'sess_123.validSig' },
-        TEST_SECRET
-      );
-
-      const verified = verifyConsentToken(tokenLeo, TEST_SECRET);
+      assert.ok(token.includes('.'));
+      const verified = verifyConsentToken(token);
       assert.equal(verified.valid, true);
+      assert.equal(verified.payload.childName, 'emma');
+      assert.equal(verified.payload.sessionId, validSession);
 
-      // Same child 'Leo' -> matches
-      const requestedChild1 = 'Leo';
-      assert.equal(verified.payload.childName, requestedChild1.toLowerCase());
+      // Child name mismatch check
+      const currentChild = 'Liam';
+      assert.notEqual(verified.payload.childName, currentChild.toLowerCase());
 
-      // Different child 'Maya' -> MUST BE REJECTED
-      const requestedChild2 = 'Maya';
-      assert.notEqual(verified.payload.childName, requestedChild2.toLowerCase());
+      // Session mismatch check
+      const hijackedSession = createSignedSessionId();
+      assert.notEqual(verified.payload.sessionId, hijackedSession);
+
+      // Tampered token check
+      const tampered = `${token.split('.')[0]}.invalidSignature`;
+      assert.equal(verifyConsentToken(tampered).valid, false);
     });
 
-    it('requires strict session matching and rejects using consent token on a different session', () => {
-      const token = createConsentToken(
-        { role: 'parent', childName: 'Leo', sessionId: 'sess_original.validSig' },
-        TEST_SECRET
-      );
+    it('rejects empty child name or missing session ID when creating consent token', () => {
+      assert.throws(() => {
+        createConsentToken({ guardianRole: 'parent', childName: '', sessionId: 'sess_123' });
+      }, /child name/i);
 
-      const verified = verifyConsentToken(token, TEST_SECRET);
-      assert.equal(verified.valid, true);
-
-      // Same session
-      assert.equal(verified.payload.sessionId, 'sess_original.validSig');
-
-      // Different session
-      assert.notEqual(verified.payload.sessionId, 'sess_hijacked.validSig');
-
-      // Empty session must fail
-      const emptyCheck = Boolean(verified.payload.sessionId && '' && verified.payload.sessionId === '');
-      assert.equal(emptyCheck, false);
+      assert.throws(() => {
+        createConsentToken({ guardianRole: 'parent', childName: 'Emma', sessionId: '' });
+      }, /session id/i);
     });
 
-    it('production CSP contains neither unsafe-inline nor unsafe-eval in script-src', () => {
+    it('production Content Security Policy strictly excludes unsafe-inline and unsafe-eval from script-src', () => {
       const prodCsp =
         "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; media-src 'self' data: blob:; connect-src 'self' https:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self' https://*.google.com https://*.run.app;";
 
-      // Parse script-src directive
       const scriptSrcMatch = prodCsp.match(/script-src\s+([^;]+)/);
-      assert.ok(scriptSrcMatch, 'script-src directive must exist in CSP');
-      const scriptSrc = scriptSrcMatch[1];
+      assert.ok(scriptSrcMatch);
+      const scriptDirectives = scriptSrcMatch[1];
 
-      assert.ok(!scriptSrc.includes("'unsafe-inline'"), "script-src must NOT contain 'unsafe-inline'");
-      assert.ok(!scriptSrc.includes("'unsafe-eval'"), "script-src must NOT contain 'unsafe-eval'");
-      assert.ok(prodCsp.includes("object-src 'none'"), "CSP must enforce object-src 'none'");
-      assert.ok(prodCsp.includes("base-uri 'self'"), "CSP must enforce base-uri 'self'");
-    });
-
-    it('project source download endpoint is strictly disabled in production (returns 404)', () => {
-      function handleDownloadEndpoint(nodeEnv: string) {
-        if (nodeEnv === 'production') {
-          return { status: 404, error: 'Project source archive download is disabled in deployed production environments.' };
-        }
-        return { status: 200 };
-      }
-
-      assert.equal(handleDownloadEndpoint('production').status, 404);
+      assert.equal(scriptDirectives.includes("'unsafe-inline'"), false);
+      assert.equal(scriptDirectives.includes("'unsafe-eval'"), false);
+      assert.equal(prodCsp.includes("object-src 'none'"), true);
+      assert.equal(prodCsp.includes("base-uri 'self'"), true);
     });
   });
 });
