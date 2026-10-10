@@ -67,6 +67,7 @@ export default function App() {
   const [autosavedSession, setAutosavedSession] = useState<AutosavedSession | null>(null);
   const [showRestoreBanner, setShowRestoreBanner] = useState(false);
   const [isStorageHydrated, setIsStorageHydrated] = useState(false);
+  const [storageInitError, setStorageInitError] = useState<string | null>(null);
 
   // Modals & Drawers
   const [isChatOpen, setIsChatOpen] = useState(false);
@@ -145,9 +146,12 @@ export default function App() {
         }
       })
       .catch((err) => {
-        console.warn('Storage initialization warning:', err);
+        console.error('Storage initialization failed:', err);
         if (isMounted) {
-          setIsStorageHydrated(true);
+          // CRITICAL: Never mark hydrated on failure!
+          // This prevents autosave from clobbering existing saved projects with default template
+          setIsStorageHydrated(false);
+          setStorageInitError(err?.message || 'Storage initialization encountered an error.');
         }
       });
 
@@ -1229,6 +1233,25 @@ export default function App() {
 
       {/* Main Content Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-8 py-6 sm:py-8 space-y-8">
+        {/* Storage Load Failure Banner */}
+        {storageInitError && (
+          <div className="p-4 rounded-2xl bg-amber-50 border-2 border-amber-300 text-amber-950 shadow-sm flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <AlertCircle className="w-5 h-5 text-amber-600 shrink-0" />
+              <div>
+                <p className="font-bold text-sm">Storage could not be loaded</p>
+                <p className="text-xs text-amber-800">Autosave is safely paused to protect your existing saved projects. {storageInitError}</p>
+              </div>
+            </div>
+            <button
+              onClick={() => window.location.reload()}
+              className="px-3 py-1.5 bg-amber-200 hover:bg-amber-300 rounded-xl text-xs font-bold text-amber-900 transition-colors cursor-pointer shrink-0"
+            >
+              Retry
+            </button>
+          </div>
+        )}
+
         {/* On page load: Restore Last Session banner if autosaved data exists */}
         {showRestoreBanner && autosavedSession && autosavedSession.book && (
           <RestoreSessionBanner

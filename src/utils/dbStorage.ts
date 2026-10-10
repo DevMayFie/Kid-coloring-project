@@ -5,12 +5,167 @@
  * borders, certificates, and audio recordings without localStorage's 5MB quota limit.
  */
 
-import { get, set, del, clear, createStore } from 'idb-keyval';
+import { get, set, del, clear } from 'idb-keyval';
 import { ColoringBook, FavoriteBook } from '../types';
 
-// Dedicated IndexedDB custom stores
-export const bookStore = createStore('ColorCraftDB', 'coloring_books');
-export const consentStore = createStore('ColorCraftDB', 'privacy_consent');
+/**
+ * Safe IndexedDB store creator that automatically inspects existing databases,
+ * detects missing object stores, and performs safe schema upgrades (incrementing DB version)
+ * to ensure all required object stores exist.
+ *
+ * This eliminates:
+ * NotFoundError: Failed to execute 'transaction' on 'IDBDatabase': One of the specified object stores was not found.
+ */
+export function createSafeStore(
+  dbName: string,
+  storeName: string,
+  allRequiredStores: string[] = ['coloring_books', 'privacy_consent', 'keyval']
+) {
+  let dbPromise: Promise<IDBDatabase> | null = null;
+
+  const getDB = (): Promise<IDBDatabase> => {
+    if (dbPromise) return dbPromise;
+
+    dbPromise = new Promise<IDBDatabase>((resolve, reject) => {
+      if (typeof indexedDB === 'undefined') {
+        return reject(new Error('IndexedDB is not supported in this environment'));
+      }
+
+      const openReq = indexedDB.open(dbName);
+
+      openReq.onerror = () => {
+        dbPromise = null;
+        reject(openReq.error || new Error(`Failed to open IndexedDB "${dbName}"`));
+      };
+
+      openReq.onupgradeneeded = () => {
+        const db = openReq.result;
+        for (const s of allRequiredStores) {
+          if (db.objectStoreNames && typeof db.objectStoreNames.contains === 'function') {
+            if (!db.objectStoreNames.contains(s)) {
+              try {
+                db.createObjectStore(s);
+              } catch {}
+            }
+          }
+        }
+      };
+
+      openReq.onsuccess = () => {
+        const db = openReq.result;
+
+        db.onversionchange = () => {
+          try {
+            db.close();
+          } catch {}
+          dbPromise = null;
+        };
+
+        db.onclose = () => {
+          dbPromise = null;
+        };
+
+        const hasStoreNames = db.objectStoreNames && typeof db.objectStoreNames.contains === 'function';
+        const missingStores = hasStoreNames
+          ? allRequiredStores.filter((s) => !db.objectStoreNames.contains(s))
+          : [];
+
+        if (missingStores.length === 0 || !hasStoreNames) {
+          resolve(db);
+          return;
+        }
+
+        // Schema upgrade needed to add missing object stores without losing existing data!
+        const nextVersion = (db.version || 1) + 1;
+        try {
+          db.close();
+        } catch {}
+
+        const upgradeReq = indexedDB.open(dbName, nextVersion);
+
+        upgradeReq.onerror = () => {
+          dbPromise = null;
+          reject(upgradeReq.error || new Error(`Failed to upgrade IndexedDB "${dbName}" to v${nextVersion}`));
+        };
+
+        upgradeReq.onupgradeneeded = () => {
+          const upDb = upgradeReq.result;
+          for (const s of allRequiredStores) {
+            if (upDb.objectStoreNames && !upDb.objectStoreNames.contains(s)) {
+              try {
+                upDb.createObjectStore(s);
+              } catch {}
+            }
+          }
+        };
+
+        upgradeReq.onsuccess = () => {
+          const upDb = upgradeReq.result;
+          upDb.onversionchange = () => {
+            try {
+              upDb.close();
+            } catch {}
+            dbPromise = null;
+          };
+          upDb.onclose = () => {
+            dbPromise = null;
+          };
+          resolve(upDb);
+        };
+      };
+    });
+
+    return dbPromise;
+  };
+
+  return <T>(txMode: IDBTransactionMode, callback: (store: IDBObjectStore) => T | PromiseLike<T>): Promise<T> => {
+    return getDB().then(async (db) => {
+      try {
+        return await callback(db.transaction(storeName, txMode).objectStore(storeName));
+      } catch (err: any) {
+        const isNotFoundError =
+          err &&
+          (err.name === 'NotFoundError' ||
+            String(err).includes('One of the specified object stores was not found') ||
+            String(err).includes('NotFoundError'));
+
+        if (isNotFoundError) {
+          // Self-heal: Force database version upgrade to create missing store
+          dbPromise = null;
+          try {
+            db.close();
+          } catch {}
+
+          const nextVersion = (db.version || 1) + 1;
+          const healedDb = await new Promise<IDBDatabase>((resolve, reject) => {
+            const req = indexedDB.open(dbName, nextVersion);
+            req.onerror = () => reject(req.error);
+            req.onupgradeneeded = () => {
+              const uDb = req.result;
+              for (const s of allRequiredStores) {
+                if (uDb.objectStoreNames && !uDb.objectStoreNames.contains(s)) {
+                  try {
+                    uDb.createObjectStore(s);
+                  } catch {}
+                }
+              }
+            };
+            req.onsuccess = () => resolve(req.result);
+          });
+
+          dbPromise = Promise.resolve(healedDb);
+          return callback(healedDb.transaction(storeName, txMode).objectStore(storeName));
+        }
+
+        throw err;
+      }
+    });
+  };
+}
+
+// Dedicated IndexedDB custom stores with auto-healing and schema synchronization
+export const bookStore = createSafeStore('ColorCraftDB', 'coloring_books', ['coloring_books', 'privacy_consent', 'keyval']);
+export const consentStore = createSafeStore('ColorCraftDB', 'privacy_consent', ['coloring_books', 'privacy_consent', 'keyval']);
 
 const KEY_AUTOSAVE = 'autosaved_session_current';
 const KEY_FAVORITES = 'favorites_collection';
@@ -32,6 +187,7 @@ let cachedFavorites: FavoriteBook[] = [];
 let cachedHistory: ColoringBook[] = [];
 let cachedConsent: ParentalConsentRecord | null = null;
 let isInitialized = false;
+let initError: Error | null = null;
 let initPromise: Promise<void> | null = null;
 
 // Mutex queue to serialize write operations and prevent read-modify-write race conditions
@@ -45,148 +201,179 @@ function enqueueWrite<T>(op: () => Promise<T>): Promise<T> {
 
 /**
  * Ensures storage initialization has fully resolved before executing reads/writes.
+ * All callers share the exact same underlying initialization promise.
  */
 export function storageReady(): Promise<void> {
-  if (!initPromise) {
-    initPromise = initStorage();
-  }
-  return initPromise;
+  return initStorage();
 }
 
 /**
- * Returns true if IndexedDB has completed hydration into memory cache
+ * Returns true if IndexedDB has completed hydration into memory cache without errors.
  */
 export function isStorageHydrated(): boolean {
-  return isInitialized;
+  return isInitialized && initError === null;
+}
+
+/**
+ * Retrieves storage initialization error if any occurred.
+ */
+export function getStorageInitError(): Error | null {
+  return initError;
 }
 
 /**
  * Initialize storage from IndexedDB on startup and migrate legacy localStorage if found.
+ * Thread-safe: All callers share the exact same initialization promise.
  */
-export async function initStorage(): Promise<void> {
-  if (initPromise && isInitialized) return initPromise;
-
-  try {
-    // 1. Load Autosaved Session from IndexedDB
-    const idbAutosave = await get<{ book: ColoringBook; savedAt: number }>(KEY_AUTOSAVE, bookStore);
-    if (idbAutosave && idbAutosave.book && Array.isArray(idbAutosave.book.pages)) {
-      cachedAutosave = idbAutosave;
-    } else if (typeof localStorage !== 'undefined') {
-      // Legacy migration from localStorage
-      try {
-        const raw = localStorage.getItem('coloring_book_autosaved_session_v1');
-        if (raw) {
-          const parsed = JSON.parse(raw);
-          if (parsed && parsed.book && Array.isArray(parsed.book.pages)) {
-            cachedAutosave = parsed;
-            await set(KEY_AUTOSAVE, parsed, bookStore);
-            // Clean up localStorage to prevent quota exhaustion
-            localStorage.removeItem('coloring_book_autosaved_session_v1');
-          }
-        }
-      } catch (e) {
-        console.warn('Legacy autosave migration skipped:', e);
-      }
-    }
-
-    // 2. Load Favorites from IndexedDB
-    const idbFavorites = await get<FavoriteBook[]>(KEY_FAVORITES, bookStore);
-    if (Array.isArray(idbFavorites) && idbFavorites.length > 0) {
-      cachedFavorites = idbFavorites;
-    } else if (typeof localStorage !== 'undefined') {
-      // Legacy migration from localStorage
-      try {
-        const rawFav = localStorage.getItem('coloring_book_favorites_v1');
-        if (rawFav) {
-          const parsed = JSON.parse(rawFav);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            cachedFavorites = parsed;
-            await set(KEY_FAVORITES, parsed, bookStore);
-            // Clean up localStorage to free quota
-            localStorage.removeItem('coloring_book_favorites_v1');
-          }
-        }
-      } catch (e) {
-        console.warn('Legacy favorites migration skipped:', e);
-      }
-    }
-
-    // 3. Load Session History from IndexedDB
-    const idbHistory = await get<ColoringBook[]>(KEY_HISTORY, bookStore);
-    if (Array.isArray(idbHistory) && idbHistory.length > 0) {
-      cachedHistory = idbHistory;
-    } else if (typeof sessionStorage !== 'undefined') {
-      // Legacy migration from sessionStorage
-      try {
-        const rawHist = sessionStorage.getItem('coloring_book_session_history_v1');
-        if (rawHist) {
-          const parsed = JSON.parse(rawHist);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            cachedHistory = parsed;
-            await set(KEY_HISTORY, parsed, bookStore);
-            sessionStorage.removeItem('coloring_book_session_history_v1');
-          }
-        }
-      } catch (e) {
-        console.warn('Legacy history migration skipped:', e);
-      }
-    }
-
-    // 4. Load Parental Consent from IndexedDB
-    const idbConsent = await get<ParentalConsentRecord>(KEY_PARENTAL_CONSENT, consentStore);
-    if (idbConsent && idbConsent.granted) {
-      cachedConsent = idbConsent;
-    } else if (typeof localStorage !== 'undefined') {
-      // Legacy check
-      try {
-        const rawConsent = localStorage.getItem('colorcraft_parental_consent_v1');
-        if (rawConsent === 'true') {
-          cachedConsent = {
-            granted: true,
-            timestamp: Date.now(),
-            version: '1.0',
-          };
-          await set(KEY_PARENTAL_CONSENT, cachedConsent, consentStore);
-          localStorage.removeItem('colorcraft_parental_consent_v1');
-        }
-      } catch (e) {}
-    }
-
-    // Mark hydration as fully completed ONLY after all records are loaded
-    isInitialized = true;
-
-    // Broadcast initialization complete
-    if (typeof window !== 'undefined') {
-      window.dispatchEvent(new CustomEvent('coloring_book_storage_ready'));
-      if (cachedAutosave) {
-        window.dispatchEvent(
-          new CustomEvent('coloring_book_autosave_updated', { detail: cachedAutosave })
-        );
-      }
-      if (cachedFavorites.length > 0) {
-        window.dispatchEvent(new CustomEvent('coloring_book_favorites_updated'));
-      }
-      if (cachedHistory.length > 0) {
-        window.dispatchEvent(
-          new CustomEvent('coloring_book_session_history_updated', { detail: cachedHistory })
-        );
-      }
-      if (cachedConsent?.granted) {
-        window.dispatchEvent(
-          new CustomEvent('parental_consent_updated', { detail: cachedConsent })
-        );
-      }
-    }
-  } catch (err) {
-    console.warn('IndexedDB initialization encountered an issue, fallback to memory cache:', err);
-    isInitialized = true;
+export function initStorage(): Promise<void> {
+  if (initPromise) {
+    return initPromise;
   }
+
+  initPromise = (async () => {
+    try {
+      // 1. Load Autosaved Session from IndexedDB
+      const idbAutosave = await get<{ book: ColoringBook; savedAt: number }>(KEY_AUTOSAVE, bookStore);
+      if (idbAutosave && idbAutosave.book && Array.isArray(idbAutosave.book.pages)) {
+        cachedAutosave = idbAutosave;
+      } else if (typeof localStorage !== 'undefined') {
+        // Legacy migration from localStorage
+        try {
+          const raw = localStorage.getItem('coloring_book_autosaved_session_v1');
+          if (raw) {
+            const parsed = JSON.parse(raw);
+            if (parsed && parsed.book && Array.isArray(parsed.book.pages)) {
+              cachedAutosave = parsed;
+              await set(KEY_AUTOSAVE, parsed, bookStore);
+              // Clean up localStorage to prevent quota exhaustion
+              localStorage.removeItem('coloring_book_autosaved_session_v1');
+            }
+          }
+        } catch (e) {
+          console.warn('Legacy autosave migration skipped:', e);
+        }
+      }
+
+      // 2. Load Favorites from IndexedDB
+      const idbFavorites = await get<FavoriteBook[]>(KEY_FAVORITES, bookStore);
+      if (Array.isArray(idbFavorites) && idbFavorites.length > 0) {
+        cachedFavorites = idbFavorites;
+      } else if (typeof localStorage !== 'undefined') {
+        // Legacy migration from localStorage
+        try {
+          const rawFav = localStorage.getItem('coloring_book_favorites_v1');
+          if (rawFav) {
+            const parsed = JSON.parse(rawFav);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+              cachedFavorites = parsed;
+              await set(KEY_FAVORITES, parsed, bookStore);
+              // Clean up localStorage to free quota
+              localStorage.removeItem('coloring_book_favorites_v1');
+            }
+          }
+        } catch (e) {
+          console.warn('Legacy favorites migration skipped:', e);
+        }
+      }
+
+      // 3. Load Session History from IndexedDB
+      const idbHistory = await get<ColoringBook[]>(KEY_HISTORY, bookStore);
+      if (Array.isArray(idbHistory) && idbHistory.length > 0) {
+        cachedHistory = idbHistory;
+      } else if (typeof sessionStorage !== 'undefined') {
+        // Legacy migration from sessionStorage
+        try {
+          const rawHist = sessionStorage.getItem('coloring_book_session_history_v1');
+          if (rawHist) {
+            const parsed = JSON.parse(rawHist);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+              cachedHistory = parsed;
+              await set(KEY_HISTORY, parsed, bookStore);
+              sessionStorage.removeItem('coloring_book_session_history_v1');
+            }
+          }
+        } catch (e) {
+          console.warn('Legacy history migration skipped:', e);
+        }
+      }
+
+      // 4. Load Parental Consent from IndexedDB
+      try {
+        let idbConsent: ParentalConsentRecord | undefined;
+        try {
+          idbConsent = await get<ParentalConsentRecord>(KEY_PARENTAL_CONSENT, consentStore);
+        } catch {
+          // Fallback check if stored in bookStore
+          try {
+            idbConsent = await get<ParentalConsentRecord>(KEY_PARENTAL_CONSENT, bookStore);
+          } catch {}
+        }
+
+        if (idbConsent && idbConsent.granted) {
+          cachedConsent = idbConsent;
+        } else if (typeof localStorage !== 'undefined') {
+          // Legacy check
+          try {
+            const rawConsent = localStorage.getItem('colorcraft_parental_consent_v1');
+            if (rawConsent === 'true') {
+              cachedConsent = {
+                granted: true,
+                timestamp: Date.now(),
+                version: '1.0',
+              };
+              await set(KEY_PARENTAL_CONSENT, cachedConsent, consentStore).catch(() => {});
+              localStorage.removeItem('colorcraft_parental_consent_v1');
+            }
+          } catch (e) {}
+        }
+      } catch (consentErr) {
+        console.warn('Parental consent load non-fatal warning:', consentErr);
+      }
+
+      // Mark hydration as fully completed ONLY after all records are loaded
+      isInitialized = true;
+      initError = null;
+
+      // Broadcast initialization complete
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('coloring_book_storage_ready'));
+        if (cachedAutosave) {
+          window.dispatchEvent(
+            new CustomEvent('coloring_book_autosave_updated', { detail: cachedAutosave })
+          );
+        }
+        if (cachedFavorites.length > 0) {
+          window.dispatchEvent(new CustomEvent('coloring_book_favorites_updated'));
+        }
+        if (cachedHistory.length > 0) {
+          window.dispatchEvent(
+            new CustomEvent('coloring_book_session_history_updated', { detail: cachedHistory })
+          );
+        }
+        if (cachedConsent?.granted) {
+          window.dispatchEvent(
+            new CustomEvent('parental_consent_updated', { detail: cachedConsent })
+          );
+        }
+      }
+    } catch (err: any) {
+      console.error('Critical: IndexedDB storage initialization failed:', err);
+      // DO NOT mark isInitialized as true! Protect existing saved projects from being overwritten!
+      isInitialized = false;
+      initError = err instanceof Error ? err : new Error(String(err));
+      // Reset initPromise so a retry can be attempted later
+      initPromise = null;
+      throw initError;
+    }
+  })();
+
+  return initPromise;
 }
 
 // Automatically initiate background initialization in browser
 if (typeof window !== 'undefined') {
   initStorage().catch((err) => {
-    console.warn('Storage initialisation error:', err);
+    console.warn('Background storage initialization warning:', err);
   });
 }
 
@@ -457,7 +644,14 @@ export function getParentalConsentRecordSync(): ParentalConsentRecord | null {
 export async function getParentalConsentAsync(): Promise<boolean> {
   await storageReady();
   try {
-    const record = await get<ParentalConsentRecord>(KEY_PARENTAL_CONSENT, consentStore);
+    let record: ParentalConsentRecord | undefined;
+    try {
+      record = await get<ParentalConsentRecord>(KEY_PARENTAL_CONSENT, consentStore);
+    } catch {
+      try {
+        record = await get<ParentalConsentRecord>(KEY_PARENTAL_CONSENT, bookStore);
+      } catch {}
+    }
     if (record && record.granted) {
       cachedConsent = record;
       return true;
@@ -471,7 +665,14 @@ export async function getParentalConsentAsync(): Promise<boolean> {
 export async function getParentalConsentRecordAsync(): Promise<ParentalConsentRecord | null> {
   await storageReady();
   try {
-    const record = await get<ParentalConsentRecord>(KEY_PARENTAL_CONSENT, consentStore);
+    let record: ParentalConsentRecord | undefined;
+    try {
+      record = await get<ParentalConsentRecord>(KEY_PARENTAL_CONSENT, consentStore);
+    } catch {
+      try {
+        record = await get<ParentalConsentRecord>(KEY_PARENTAL_CONSENT, bookStore);
+      } catch {}
+    }
     if (record && record.granted) {
       cachedConsent = record;
       return record;
@@ -501,11 +702,15 @@ export async function saveParentalConsentAsync(details?: {
 
   try {
     await set(KEY_PARENTAL_CONSENT, record, consentStore);
-    if (typeof window !== 'undefined') {
-      window.dispatchEvent(new CustomEvent('parental_consent_updated', { detail: record }));
-    }
   } catch (err) {
-    console.warn('Failed to save parental consent in IndexedDB:', err);
+    console.warn('Failed to save parental consent in consentStore, saving to bookStore fallback:', err);
+    try {
+      await set(KEY_PARENTAL_CONSENT, record, bookStore);
+    } catch {}
+  }
+
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('parental_consent_updated', { detail: record }));
   }
 
   return record;
@@ -517,11 +722,14 @@ export async function revokeParentalConsentAsync(): Promise<void> {
     cachedConsent = null;
     try {
       await del(KEY_PARENTAL_CONSENT, consentStore);
-      if (typeof window !== 'undefined') {
-        window.dispatchEvent(new CustomEvent('parental_consent_updated', { detail: null }));
-      }
     } catch (err) {
-      console.warn('Failed to revoke parental consent in IndexedDB:', err);
+      console.warn('Failed to revoke parental consent in consentStore:', err);
+    }
+    try {
+      await del(KEY_PARENTAL_CONSENT, bookStore);
+    } catch {}
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('parental_consent_updated', { detail: null }));
     }
   });
 }

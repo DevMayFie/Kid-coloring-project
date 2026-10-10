@@ -23,9 +23,9 @@ const PORT = 3000;
 app.disable('x-powered-by');
 
 // Security: Comprehensive HTTP Security Headers configured for AI Studio iFrame preview
-const isProduction = process.env.NODE_ENV === 'production';
+const isProduction = process.env.NODE_ENV === 'production' || process.env.ENVIRONMENT === 'production';
 const contentSecurityPolicy = isProduction
-  ? "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; media-src 'self' data: blob:; connect-src 'self' https:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self' https://*.google.com https://*.run.app;"
+  ? "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; media-src 'self' data: blob:; connect-src 'self' https:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self' https://*.google.com https://*.run.app;"
   : "default-src 'self' https: data: blob: 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; media-src 'self' data: blob:; connect-src 'self' https:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors *;";
 
 app.use((_req, res, next) => {
@@ -197,6 +197,13 @@ const consentRateLimiter = createRateLimiter({
   message: 'Parental consent verification limit reached. Please wait a few minutes before submitting verification again.',
 });
 
+// Rate limiter for session generation to prevent quota resets by cycling sessions
+const sessionRateLimiter = createRateLimiter({
+  windowMinutes: 10,
+  max: 15,
+  message: 'Session creation limit reached. Please wait a few minutes before requesting a new session handshake.',
+});
+
 // -------------------------------------------------------------
 // ANONYMOUS SESSION & USER QUOTA SYSTEM (GEMINI ENDPOINTS)
 // -------------------------------------------------------------
@@ -230,6 +237,8 @@ setInterval(() => {
   }
 }, 5 * 60 * 1000);
 
+const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours validity
+
 /**
  * Server-issued, HMAC-signed anonymous session generator.
  * Eliminates trust in arbitrary client-generated identifiers while preserving
@@ -243,17 +252,33 @@ function createSignedSessionId(): string {
   return `${rawId}.${sig}`;
 }
 
-function verifySignedSessionId(sessionId: string | undefined): { valid: boolean; rawId?: string } {
-  if (!sessionId || typeof sessionId !== 'string') return { valid: false };
+function verifySignedSessionId(sessionId: string | undefined): { valid: boolean; rawId?: string; reason?: string } {
+  if (!sessionId || typeof sessionId !== 'string') return { valid: false, reason: 'Session ID is missing or invalid' };
   const parts = sessionId.split('.');
-  if (parts.length !== 2) return { valid: false };
+  if (parts.length !== 2) return { valid: false, reason: 'Malformed session format' };
   const [rawId, sig] = parts;
-  if (!rawId.startsWith('sess_')) return { valid: false };
+  if (!rawId.startsWith('sess_')) return { valid: false, reason: 'Invalid session prefix' };
+
+  const rawParts = rawId.split('_');
+  if (rawParts.length < 3) return { valid: false, reason: 'Malformed session timestamp structure' };
+  const rawTimestamp = rawParts[1];
+  const sessionCreatedAt = parseInt(rawTimestamp, 36);
+  if (isNaN(sessionCreatedAt)) return { valid: false, reason: 'Invalid session timestamp' };
+
+  const now = Date.now();
+  // Check expiration (24h) and prevent tokens claiming creation far in future
+  if (now - sessionCreatedAt > SESSION_MAX_AGE_MS) {
+    return { valid: false, reason: 'Session token has expired' };
+  }
+  if (sessionCreatedAt > now + 60000) {
+    return { valid: false, reason: 'Session timestamp is in the future' };
+  }
+
   const expectedSig = crypto.createHmac('sha256', CONSENT_SECRET).update(rawId).digest('base64url');
   const sigBuf = Buffer.from(sig);
   const expBuf = Buffer.from(expectedSig);
   if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
-    return { valid: false };
+    return { valid: false, reason: 'Invalid session signature' };
   }
   return { valid: true, rawId };
 }
@@ -288,65 +313,218 @@ function getAnonymousSessionId(req: express.Request): string {
 }
 
 // -------------------------------------------------------------
-// AI PROVIDER COST MONITORING & HARD SPENDING LIMIT SYSTEM
+// AI PROVIDER COST MONITORING & CIRCUIT BREAKER SYSTEM
 // -------------------------------------------------------------
-const AI_DAILY_BUDGET_USD = parseFloat(process.env.AI_DAILY_BUDGET_USD || '50.00'); // Default $50/day hard limit
+// Note: This is an internal software estimate and application circuit breaker.
+// It is NOT a substitute for hard billing caps configured directly at the provider console.
+const AI_DAILY_BUDGET_USD = parseFloat(process.env.AI_DAILY_BUDGET_USD || '50.00');
 let dailyEstimatedCostUsd = 0;
+let dailyReservedCostUsd = 0; // Concurrency reservation lock
 let dailyRequestsTracked = 0;
 let dailyCostResetTimestamp = Date.now() + 24 * 60 * 60 * 1000;
+let reservationCounter = 0;
+const activeReservations = new Map<string, number>();
 
-function checkAiBudgetCircuitBreaker(): { allowed: boolean; reason?: string } {
+function refreshDailyBudgetWindow() {
   const now = Date.now();
   if (now >= dailyCostResetTimestamp) {
     dailyEstimatedCostUsd = 0;
+    dailyReservedCostUsd = 0;
     dailyRequestsTracked = 0;
+    activeReservations.clear();
     dailyCostResetTimestamp = now + 24 * 60 * 60 * 1000;
   }
-  if (dailyEstimatedCostUsd >= AI_DAILY_BUDGET_USD) {
+}
+
+export function checkAiBudgetCircuitBreaker(estimatedCostUsd: number = 0.001): { allowed: boolean; reason?: string } {
+  refreshDailyBudgetWindow();
+  const projectedCost = dailyEstimatedCostUsd + dailyReservedCostUsd + estimatedCostUsd;
+  if (projectedCost > AI_DAILY_BUDGET_USD) {
     return {
       allowed: false,
-      reason: `Daily AI usage spending limit ($${AI_DAILY_BUDGET_USD.toFixed(2)}) reached. Requests are safely paused to prevent unexpected provider charges.`,
+      reason: `Daily AI usage spending budget limit ($${AI_DAILY_BUDGET_USD.toFixed(2)} estimated) reached. Requests are safely paused to prevent unexpected provider charges. Please try again tomorrow or contact an administrator.`,
     };
   }
   return { allowed: true };
 }
 
-function recordAiUsageEstimate(estimatedTokens: number = 1000, isImage: boolean = false) {
-  // Conservative cost estimations for Flash / Imagen operations
+/**
+ * Concurrency-safe budget reservation.
+ * Reserves estimated cost upfront before making provider API request to prevent
+ * simultaneous concurrent requests from bypassing budget limits through race conditions.
+ */
+export function reserveAiBudget(estimatedCostUsd: number): { allowed: boolean; reservationId?: string; reason?: string } {
+  refreshDailyBudgetWindow();
+  const projectedCost = dailyEstimatedCostUsd + dailyReservedCostUsd + estimatedCostUsd;
+  if (projectedCost > AI_DAILY_BUDGET_USD) {
+    return {
+      allowed: false,
+      reason: `Daily AI usage spending budget limit ($${AI_DAILY_BUDGET_USD.toFixed(2)} estimated) reached. Requests are safely paused to prevent unexpected provider charges. Please try again tomorrow or contact an administrator.`,
+    };
+  }
+
+  reservationCounter += 1;
+  const reservationId = `res_${Date.now()}_${reservationCounter}_${crypto.randomBytes(4).toString('hex')}`;
+  dailyReservedCostUsd += estimatedCostUsd;
+  activeReservations.set(reservationId, estimatedCostUsd);
+
+  return { allowed: true, reservationId };
+}
+
+/**
+ * Commits usage upon completion of API call (success or provider failure).
+ */
+export function commitAiBudget(reservationId: string | undefined, actualCostUsd?: number) {
+  refreshDailyBudgetWindow();
+  let reservedAmount = 0;
+  if (reservationId && activeReservations.has(reservationId)) {
+    reservedAmount = activeReservations.get(reservationId) || 0;
+    activeReservations.delete(reservationId);
+    dailyReservedCostUsd = Math.max(0, dailyReservedCostUsd - reservedAmount);
+  }
+
+  const finalCost = typeof actualCostUsd === 'number' ? actualCostUsd : reservedAmount;
+  dailyEstimatedCostUsd += finalCost;
+  dailyRequestsTracked += 1;
+}
+
+/**
+ * Releases reservation if the request was aborted before contacting provider.
+ */
+export function releaseAiBudgetReservation(reservationId: string | undefined) {
+  if (reservationId && activeReservations.has(reservationId)) {
+    const reservedAmount = activeReservations.get(reservationId) || 0;
+    activeReservations.delete(reservationId);
+    dailyReservedCostUsd = Math.max(0, dailyReservedCostUsd - reservedAmount);
+  }
+}
+
+/**
+ * Records an estimated usage amount (conservative unit economics).
+ */
+export function recordAiUsageEstimate(estimatedTokens: number = 1000, isImage: boolean = false) {
+  refreshDailyBudgetWindow();
   const cost = isImage ? 0.04 : (estimatedTokens / 1000) * 0.0003;
   dailyEstimatedCostUsd += cost;
   dailyRequestsTracked += 1;
 }
 
+/**
+ * Dual-layer Quota Middleware:
+ * Enforces per-endpoint request limits across BOTH the IP envelope and the session token.
+ * Prevents clients from resetting or multiplying quotas by acquiring fresh sessions.
+ */
 function createSessionQuotaMiddleware(config: SessionQuotaConfig): express.RequestHandler {
   return (req, res, next) => {
-    const cleanSession = getAnonymousSessionId(req);
-    const bucketKey = `${config.endpointName}:${cleanSession}`;
+    const clientIp = (req.ip || req.socket.remoteAddress || 'unknown-ip').replace(/^.*:/, '') || 'client';
+    const bodySession = typeof req.body?.sessionId === 'string' ? req.body.sessionId.trim() : '';
+    const headerSession = typeof req.headers['x-session-id'] === 'string' ? (req.headers['x-session-id'] as string).trim() : '';
+
+    if (bodySession && headerSession && bodySession !== headerSession) {
+      return res.status(400).json({
+        success: false,
+        error: 'Session ID mismatch between request header and body.',
+      });
+    }
+
+    const candidateSession = bodySession || headerSession;
+    const verified = verifySignedSessionId(candidateSession);
+
     const now = Date.now();
     const windowMs = config.windowMinutes * 60 * 1000;
 
-    let record = sessionQuotaStore.get(bucketKey);
-    if (!record || record.resetAt <= now) {
-      record = { count: 1, resetAt: now + windowMs };
-      sessionQuotaStore.set(bucketKey, record);
+    // 1. IP-level quota tracking: cycling or obtaining fresh sessions cannot bypass IP limit
+    const ipBucketKey = `${config.endpointName}:ip:${clientIp}`;
+    let ipRecord = sessionQuotaStore.get(ipBucketKey);
+    if (!ipRecord || ipRecord.resetAt <= now) {
+      ipRecord = { count: 1, resetAt: now + windowMs };
+      sessionQuotaStore.set(ipBucketKey, ipRecord);
     } else {
-      record.count += 1;
+      ipRecord.count += 1;
     }
 
-    res.setHeader('X-Session-Quota-Limit', config.maxRequests.toString());
-    res.setHeader('X-Session-Quota-Remaining', Math.max(0, config.maxRequests - record.count).toString());
-    res.setHeader('X-Session-Quota-Reset', Math.ceil(record.resetAt / 1000).toString());
+    // 2. Session-level quota tracking (for verified session tokens)
+    let sessRecord: { count: number; resetAt: number } | undefined;
+    if (verified.valid && verified.rawId) {
+      const sessBucketKey = `${config.endpointName}:sess:${verified.rawId}`;
+      sessRecord = sessionQuotaStore.get(sessBucketKey);
+      if (!sessRecord || sessRecord.resetAt <= now) {
+        sessRecord = { count: 1, resetAt: now + windowMs };
+        sessionQuotaStore.set(sessBucketKey, sessRecord);
+      } else {
+        sessRecord.count += 1;
+      }
+    }
 
-    if (record.count > config.maxRequests) {
-      const waitSeconds = Math.ceil((record.resetAt - now) / 1000);
+    const currentUsage = Math.max(ipRecord.count, sessRecord ? sessRecord.count : ipRecord.count);
+    const resetTime = Math.min(ipRecord.resetAt, sessRecord ? sessRecord.resetAt : ipRecord.resetAt);
+
+    res.setHeader('X-Session-Quota-Limit', config.maxRequests.toString());
+    res.setHeader('X-Session-Quota-Remaining', Math.max(0, config.maxRequests - currentUsage).toString());
+    res.setHeader('X-Session-Quota-Reset', Math.ceil(resetTime / 1000).toString());
+
+    if (currentUsage > config.maxRequests) {
+      const waitSeconds = Math.ceil((resetTime - now) / 1000);
       return res.status(429).json({
         success: false,
-        error: `Anonymous session quota reached for ${config.endpointName}. Please wait ${waitSeconds}s before requesting again.`,
+        error: `Quota reached for ${config.endpointName}. Creating new session IDs cannot reset this limit. Please wait ${waitSeconds}s before requesting again.`,
       });
     }
 
     next();
   };
+}
+
+/**
+ * Authentication middleware for administrative and diagnostic endpoints.
+ * Requires X-Admin-Key or Authorization: Bearer header matching server secret.
+ * Rejects query parameters to prevent log leakage (CWE-598).
+ */
+function requireAdminAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
+  if (req.query.adminKey || req.query['admin-key'] || req.query.key || req.query.token) {
+    return res.status(400).json({
+      success: false,
+      error: 'Admin authentication key must not be passed in URL query parameters. Please use the X-Admin-Key or Authorization header.',
+    });
+  }
+
+  const configuredKey = process.env.ADMIN_KEY || process.env.ADMIN_SECRET;
+  if (!configuredKey && isProduction) {
+    return res.status(403).json({
+      success: false,
+      error: 'Admin functionality is disabled: ADMIN_KEY is not configured in this production environment.',
+    });
+  }
+
+  const authHeader = req.headers['authorization'];
+  const bearerKey = authHeader?.startsWith('Bearer ') ? authHeader.slice(7).trim() : undefined;
+  const adminKey = (req.headers['x-admin-key'] as string | undefined)?.trim() || bearerKey;
+
+  if (!adminKey) {
+    return res.status(401).json({
+      success: false,
+      error: 'Unauthorized: Admin authentication required via X-Admin-Key or Authorization: Bearer header.',
+    });
+  }
+
+  const targetKey = configuredKey || (isProduction ? '' : 'dev-admin-key');
+  if (!targetKey) {
+    return res.status(403).json({
+      success: false,
+      error: 'Admin functionality is disabled: ADMIN_KEY is not configured.',
+    });
+  }
+
+  const keyBuf = Buffer.from(adminKey);
+  const targetBuf = Buffer.from(targetKey);
+  if (keyBuf.length !== targetBuf.length || !crypto.timingSafeEqual(keyBuf, targetBuf)) {
+    return res.status(401).json({
+      success: false,
+      error: 'Unauthorized: Invalid admin credentials.',
+    });
+  }
+
+  next();
 }
 
 // Session Quota limiters for all Gemini API endpoints
@@ -747,11 +925,33 @@ app.get('/api/download-project', downloadRateLimiter, (req, res) => {
   }
 
   // PRODUCTION HARDENING: Source archive download must not exist in deployed production environments
-  if (process.env.NODE_ENV === 'production' || process.env.DISABLE_SOURCE_DOWNLOAD === 'true') {
+  if (isProduction || process.env.DISABLE_SOURCE_DOWNLOAD === 'true') {
     return res.status(404).json({
       success: false,
       error: 'Project source archive download is disabled in deployed production environments.',
     });
+  }
+
+  // In non-production environments, require admin authentication if ADMIN_KEY is configured
+  const configuredAdminKey = process.env.ADMIN_KEY || process.env.ADMIN_SECRET;
+  if (configuredAdminKey) {
+    const authHeader = req.headers['authorization'];
+    const bearerKey = authHeader?.startsWith('Bearer ') ? authHeader.slice(7).trim() : undefined;
+    const adminKey = (req.headers['x-admin-key'] as string | undefined)?.trim() || bearerKey;
+    if (!adminKey) {
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized: Admin authentication required to download project source archive.',
+      });
+    }
+    const keyBuf = Buffer.from(adminKey);
+    const targetBuf = Buffer.from(configuredAdminKey);
+    if (keyBuf.length !== targetBuf.length || !crypto.timingSafeEqual(keyBuf, targetBuf)) {
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized: Invalid admin credentials.',
+      });
+    }
   }
 
   try {
@@ -993,6 +1193,17 @@ CRITICAL RULES:
       },
     };
 
+    // Budget check & concurrency-safe reservation immediately before provider call
+    const estimatedPlanCost = 0.002;
+    const budgetReservation = reserveAiBudget(estimatedPlanCost);
+    if (!budgetReservation.allowed) {
+      return res.status(429).json({
+        success: false,
+        error: budgetReservation.reason || 'Daily AI usage budget reached. Please try again tomorrow.',
+        budgetExceeded: true,
+      });
+    }
+
     let response;
     try {
       response = await ai.models.generateContent({
@@ -1013,6 +1224,8 @@ CRITICAL RULES:
         contents: prompt,
         config: schemaConfig,
       });
+    } finally {
+      commitAiBudget(budgetReservation.reservationId, estimatedPlanCost);
     }
 
     const parsed = JSON.parse(response.text || '{}');
@@ -1081,37 +1294,53 @@ Guidelines:
    - tag: A short trending badge or category (e.g., "Trending Now", "Space & Sci-Fi", "Whimsical Animals", "Ocean Quest").
    - sampleScenes: An array of 3 brief bullet points of coloring scenes they would color.`;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: prompt,
-      config: {
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            themes: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  theme: { type: Type.STRING },
-                  suggestedTitle: { type: Type.STRING },
-                  description: { type: Type.STRING },
-                  emoji: { type: Type.STRING },
-                  tag: { type: Type.STRING },
-                  sampleScenes: {
-                    type: Type.ARRAY,
-                    items: { type: Type.STRING },
+    // Budget check & reservation immediately before provider call
+    const estimatedThemesCost = 0.001;
+    const budgetReservation = reserveAiBudget(estimatedThemesCost);
+    if (!budgetReservation.allowed) {
+      return res.status(429).json({
+        success: false,
+        error: budgetReservation.reason || 'Daily AI usage budget reached. Please try again tomorrow.',
+        budgetExceeded: true,
+      });
+    }
+
+    let response;
+    try {
+      response = await ai.models.generateContent({
+        model: 'gemini-3.8-flash',
+        contents: prompt,
+        config: {
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              themes: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    theme: { type: Type.STRING },
+                    suggestedTitle: { type: Type.STRING },
+                    description: { type: Type.STRING },
+                    emoji: { type: Type.STRING },
+                    tag: { type: Type.STRING },
+                    sampleScenes: {
+                      type: Type.ARRAY,
+                      items: { type: Type.STRING },
+                    },
                   },
+                  required: ['theme', 'suggestedTitle', 'description', 'emoji', 'tag'],
                 },
-                required: ['theme', 'suggestedTitle', 'description', 'emoji', 'tag'],
               },
             },
+            required: ['themes'],
           },
-          required: ['themes'],
         },
-      },
-    });
+      });
+    } finally {
+      commitAiBudget(budgetReservation.reservationId, estimatedThemesCost);
+    }
 
     const parsed = JSON.parse(response.text || '{}');
     return res.json({ success: true, themes: parsed.themes || [] });
@@ -1243,6 +1472,17 @@ app.post('/api/generate-image', imageRateLimiter, imageSessionQuota, async (req,
     // Model selection: if fast requested or 1K default without 4K, can use flash for speed & unit economics
     const primaryModel = modelPreference === 'fast' ? 'gemini-3.1-flash-lite-image' : 'gemini-3-pro-image';
 
+    // Budget check & reservation immediately before provider call
+    const estimatedImageCost = 0.04;
+    const budgetReservation = reserveAiBudget(estimatedImageCost);
+    if (!budgetReservation.allowed) {
+      return res.status(429).json({
+        success: false,
+        error: budgetReservation.reason || 'Daily AI image generation budget limit reached. Please try again tomorrow.',
+        budgetExceeded: true,
+      });
+    }
+
     let response;
     try {
       response = await ai.models.generateContent({
@@ -1283,6 +1523,8 @@ app.post('/api/generate-image', imageRateLimiter, imageSessionQuota, async (req,
           },
         },
       });
+    } finally {
+      commitAiBudget(budgetReservation.reservationId, estimatedImageCost);
     }
 
     // Extract image from parts
@@ -1365,6 +1607,21 @@ app.post('/api/generate-cover', imageRateLimiter, coverSessionQuota, async (req,
     const enhancedPrompt = prompt ? sanitizeSafeString(prompt, 700) : buildThematicCoverAiPrompt(rawTheme, rawChildName, difficulty, artStyle);
     let imageUrl = '';
 
+    // Budget check & reservation immediately before provider call
+    const estimatedCoverCost = 0.04;
+    const budgetReservation = reserveAiBudget(estimatedCoverCost);
+    if (!budgetReservation.allowed) {
+      console.warn('AI cover budget reached, generating instant thematic vector art fallback');
+      const vectorSvg = createThematicCoverSvg(rawTheme, rawChildName, difficulty, styleVariant);
+      return res.json({
+        success: true,
+        imageUrl: vectorSvg,
+        resolution: chosenSize,
+        isVectorIllustration: true,
+        notice: 'Daily AI generation budget reached; generated instant vector illustration instead.',
+      });
+    }
+
     try {
       const ai = getGenAI();
       let response;
@@ -1405,6 +1662,8 @@ app.post('/api/generate-cover', imageRateLimiter, coverSessionQuota, async (req,
             },
           },
         });
+      } finally {
+        commitAiBudget(budgetReservation.reservationId, estimatedCoverCost);
       }
 
       const parts = response.candidates?.[0]?.content?.parts || [];
@@ -1451,7 +1710,8 @@ app.post('/api/generate-cover', imageRateLimiter, coverSessionQuota, async (req,
 });
 
 // Endpoint: Issue or renew server-issued, cryptographically signed anonymous session ID
-app.get('/api/session', (req, res) => {
+// Rate limited to prevent rapid session creation abuse attempting to bypass IP limits
+app.get('/api/session', sessionRateLimiter, (req, res) => {
   const incoming = (req.headers['x-session-id'] as string | undefined)?.trim();
   if (incoming && verifySignedSessionId(incoming).valid) {
     res.setHeader('X-Session-ID', incoming);
@@ -1462,23 +1722,28 @@ app.get('/api/session', (req, res) => {
   return res.json({ success: true, sessionId: newSessionId, isNew: true });
 });
 
-// Endpoint: AI cost monitoring and hard spending limit status
-app.get('/api/admin/usage-budget', (_req, res) => {
+// Endpoint: AI cost monitoring and budget status (Protected: Admin authentication required)
+app.get('/api/admin/usage-budget', requireAdminAuth, (_req, res) => {
+  refreshDailyBudgetWindow();
   const now = Date.now();
   const resetInSeconds = Math.max(0, Math.ceil((dailyCostResetTimestamp - now) / 1000));
+  const totalReservedAndEstimated = dailyEstimatedCostUsd + dailyReservedCostUsd;
   return res.json({
     success: true,
     currency: 'USD',
     dailyBudgetLimitUsd: AI_DAILY_BUDGET_USD,
     dailyEstimatedCostUsd: Number(dailyEstimatedCostUsd.toFixed(4)),
-    remainingBudgetUsd: Number(Math.max(0, AI_DAILY_BUDGET_USD - dailyEstimatedCostUsd).toFixed(4)),
+    dailyReservedCostUsd: Number(dailyReservedCostUsd.toFixed(4)),
+    remainingBudgetUsd: Number(Math.max(0, AI_DAILY_BUDGET_USD - totalReservedAndEstimated).toFixed(4)),
     dailyRequestsTracked,
     resetInSeconds,
-    status: dailyEstimatedCostUsd >= AI_DAILY_BUDGET_USD ? 'BUDGET_EXCEEDED_PAUSED' : 'HEALTHY',
+    status: totalReservedAndEstimated >= AI_DAILY_BUDGET_USD ? 'BUDGET_EXCEEDED_PAUSED' : 'HEALTHY',
+    estimateDisclaimer: 'Internal software estimate only. Circuit breaker does not guarantee a hard spending cap at the cloud provider. Configure provider-side spending caps and alerts directly in the Google Cloud / AI provider billing console.',
   });
 });
 
-// Endpoint: Issue cryptographically signed evidence of recorded parental consent flow (COPPA / GDPR-K)
+// Endpoint: Issue cryptographically signed tokenized evidence of adult parental consent affirmation (COPPA / GDPR-K)
+// Note: This records adult consent affirmation and session binding; it is not independent proof of physical parental identity.
 app.post('/api/verify-parental-consent', consentRateLimiter, (req, res) => {
   try {
     const validationResult = validateWithZod(VerifyParentalConsentSchema, req.body);
@@ -1653,6 +1918,17 @@ app.post('/api/photo-to-line-art', imageRateLimiter, photoToArtSessionQuota, asy
     }
     const base64Data = match[2];
 
+    // Budget check & reservation immediately before provider call
+    const estimatedPhotoCost = 0.04;
+    const budgetReservation = reserveAiBudget(estimatedPhotoCost);
+    if (!budgetReservation.allowed) {
+      return res.status(429).json({
+        success: false,
+        error: budgetReservation.reason || 'Daily AI usage budget reached. Please try again tomorrow.',
+        budgetExceeded: true,
+      });
+    }
+
     const ai = getGenAI();
 
     let subjectPrompt = `Turn the ${subjectType} from this reference photo into the beloved starring hero named "${childName}" in a children's coloring book scene set in: ${sceneSetting} (${theme} theme).`;
@@ -1722,6 +1998,8 @@ Style directives:
           },
         },
       });
+    } finally {
+      commitAiBudget(budgetReservation.reservationId, estimatedPhotoCost);
     }
 
     const parts = response.candidates?.[0]?.content?.parts || [];
@@ -1876,16 +2154,32 @@ STRICT DOMAIN BOUNDARIES:
       parts: m.parts,
     }));
 
-    const response = await ai.models.generateContent({
-      model: selectedModel,
-      contents,
-      config: {
-        systemInstruction,
-        maxOutputTokens: 800,
-      },
-    });
+    // Budget check & reservation immediately before provider call
+    const estimatedChatCost = 0.001;
+    const budgetReservation = reserveAiBudget(estimatedChatCost);
+    if (!budgetReservation.allowed) {
+      return res.status(429).json({
+        success: false,
+        error: budgetReservation.reason || 'Daily AI usage budget reached. Please try again tomorrow.',
+        budgetExceeded: true,
+      });
+    }
 
-    const replyText = response.text || '';
+    let replyText = '';
+    try {
+      const response = await ai.models.generateContent({
+        model: selectedModel,
+        contents,
+        config: {
+          systemInstruction,
+          maxOutputTokens: 800,
+        },
+      });
+
+      replyText = response.text || '';
+    } finally {
+      commitAiBudget(budgetReservation.reservationId, estimatedChatCost);
+    }
 
     // Append genuine server-generated model response to server-controlled history
     serverHistory.push({

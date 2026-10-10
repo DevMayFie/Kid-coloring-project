@@ -274,12 +274,15 @@ export const ParentalConsentModal: React.FC<ParentalConsentModalProps> = ({
               />
               <div className="text-xs sm:text-sm font-medium text-gray-900 leading-snug">
                 <span className="font-bold text-gray-950 block mb-0.5">
-                  Mandatory Parental Consent (Required):
+                  Adult Consent Affirmation (Required):
                 </span>
                 I confirm that I am at least 18 years of age and the parent, legal guardian, or
                 authorized adult for this child. I explicitly give my consent to process the
                 child&apos;s name and/or photo solely to create these personalized coloring pages and
                 save them to this device&apos;s storage.
+                <span className="block mt-1 text-[11px] text-gray-500 font-normal">
+                  Note: This acknowledgment records an adult consent affirmation for this session and child under COPPA guidelines; it does not constitute independent government or physical identity verification.
+                </span>
               </div>
             </label>
           </div>
