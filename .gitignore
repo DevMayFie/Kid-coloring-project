@@ -6,3 +6,6 @@ coverage/
 *.log
 .env*
 !.env.example
+.ai-budget-state.json*
+.ai-quota-state.json*
+*.tmp

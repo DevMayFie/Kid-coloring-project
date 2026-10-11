@@ -24,9 +24,15 @@ app.disable('x-powered-by');
 
 // Security: Comprehensive HTTP Security Headers configured for AI Studio iFrame preview
 const isProduction = process.env.NODE_ENV === 'production' || process.env.ENVIRONMENT === 'production';
+export const PRODUCTION_CONTENT_SECURITY_POLICY =
+  "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; media-src 'self' data: blob:; connect-src 'self' https:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self' https://*.google.com https://*.run.app;";
+
+export const DEVELOPMENT_CONTENT_SECURITY_POLICY =
+  "default-src 'self' https: data: blob: 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; media-src 'self' data: blob:; connect-src 'self' https:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors *;";
+
 const contentSecurityPolicy = isProduction
-  ? "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; media-src 'self' data: blob:; connect-src 'self' https:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self' https://*.google.com https://*.run.app;"
-  : "default-src 'self' https: data: blob: 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; media-src 'self' data: blob:; connect-src 'self' https:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors *;";
+  ? PRODUCTION_CONTENT_SECURITY_POLICY
+  : DEVELOPMENT_CONTENT_SECURITY_POLICY;
 
 app.use((_req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -219,20 +225,122 @@ interface SessionQuotaConfig {
  * For multi-instance production deployments, plug in a Redis or Memcached store
  * (e.g., rate-limit-redis or ioredis adapter) to share state across distributed pods.
  */
-export interface SharedQuotaStore {
-  get(key: string): Promise<{ count: number; resetAt: number } | undefined> | { count: number; resetAt: number } | undefined;
-  set(key: string, value: { count: number; resetAt: number }): Promise<void> | void;
-  delete(key: string): Promise<void> | void;
+export interface QuotaRecord {
+  count: number;
+  resetAt: number;
 }
 
-export const sessionQuotaStore = new Map<string, { count: number; resetAt: number }>();
+export interface SharedQuotaStore {
+  get(key: string): QuotaRecord | undefined;
+  set(key: string, value: QuotaRecord): void;
+  delete(key: string): void;
+  clear(): void;
+  entries?(): IterableIterator<[string, QuotaRecord]>;
+}
+
+const QUOTA_STORE_FILE = process.env.AI_QUOTA_STORE_PATH || path.join(process.cwd(), '.ai-quota-state.json');
+
+export class FileQuotaStore implements SharedQuotaStore {
+  private filePath: string;
+  private cache = new Map<string, QuotaRecord>();
+
+  constructor(filePath: string) {
+    this.filePath = filePath;
+    this.reload();
+  }
+
+  reload(): void {
+    try {
+      if (fs.existsSync(this.filePath)) {
+        const raw = fs.readFileSync(this.filePath, 'utf8');
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') {
+          const now = Date.now();
+          this.cache.clear();
+          for (const [k, v] of Object.entries(parsed)) {
+            const rec = v as QuotaRecord;
+            if (rec && typeof rec.count === 'number' && typeof rec.resetAt === 'number' && rec.resetAt > now) {
+              this.cache.set(k, rec);
+            }
+          }
+        }
+      }
+    } catch {
+      // In-memory fallback
+    }
+  }
+
+  save(): void {
+    try {
+      const now = Date.now();
+      const obj: Record<string, QuotaRecord> = {};
+      for (const [k, v] of this.cache.entries()) {
+        if (v.resetAt > now) {
+          obj[k] = v;
+        }
+      }
+      const tmpPath = `${this.filePath}.${process.pid}.${Date.now()}.tmp`;
+      fs.writeFileSync(tmpPath, JSON.stringify(obj, null, 2), 'utf8');
+      fs.renameSync(tmpPath, this.filePath);
+    } catch (err) {
+      console.warn('Could not persist quota file to disk:', err);
+    }
+  }
+
+  get(key: string): QuotaRecord | undefined {
+    this.reload();
+    const rec = this.cache.get(key);
+    if (!rec) return undefined;
+    if (rec.resetAt <= Date.now()) {
+      this.cache.delete(key);
+      this.save();
+      return undefined;
+    }
+    return rec;
+  }
+
+  set(key: string, value: QuotaRecord): void {
+    this.reload();
+    this.cache.set(key, value);
+    this.save();
+  }
+
+  delete(key: string): void {
+    this.reload();
+    this.cache.delete(key);
+    this.save();
+  }
+
+  clear(): void {
+    this.cache.clear();
+    this.save();
+  }
+
+  entries() {
+    this.reload();
+    return this.cache.entries();
+  }
+}
+
+export let activeQuotaStore: SharedQuotaStore = new FileQuotaStore(QUOTA_STORE_FILE);
+export const sessionQuotaStore = activeQuotaStore;
+
+export function setQuotaStore(store: SharedQuotaStore) {
+  activeQuotaStore = store;
+}
+
+export function setQuotaStoreForTesting(store: SharedQuotaStore) {
+  activeQuotaStore = store;
+}
 
 // Periodic garbage collection for expired session quota records
 setInterval(() => {
   const now = Date.now();
-  for (const [key, record] of sessionQuotaStore.entries()) {
-    if (record.resetAt <= now) {
-      sessionQuotaStore.delete(key);
+  if (sessionQuotaStore.entries) {
+    for (const [key, record] of sessionQuotaStore.entries()) {
+      if (record.resetAt <= now) {
+        sessionQuotaStore.delete(key);
+      }
     }
   }
 }, 5 * 60 * 1000).unref();
@@ -362,7 +470,7 @@ export interface SharedBudgetStore {
 
 const BUDGET_STORE_FILE = process.env.AI_BUDGET_STORE_PATH || path.join(process.cwd(), '.ai-budget-state.json');
 
-class FileBudgetStore implements SharedBudgetStore {
+export class FileBudgetStore implements SharedBudgetStore {
   private filePath: string;
 
   constructor(filePath: string) {
@@ -370,98 +478,147 @@ class FileBudgetStore implements SharedBudgetStore {
   }
 
   getState(): BudgetState {
-    try {
-      if (fs.existsSync(this.filePath)) {
-        const raw = fs.readFileSync(this.filePath, 'utf8');
-        const parsed = JSON.parse(raw);
-        if (typeof parsed?.dailyEstimatedCostUsd === 'number') {
-          return {
-            dailyEstimatedCostUsd: parsed.dailyEstimatedCostUsd,
-            dailyReservedCostUsd: typeof parsed.dailyReservedCostUsd === 'number' ? parsed.dailyReservedCostUsd : 0,
-            dailyRequestsTracked: typeof parsed.dailyRequestsTracked === 'number' ? parsed.dailyRequestsTracked : 0,
-            dailyCostResetTimestamp: typeof parsed.dailyCostResetTimestamp === 'number' ? parsed.dailyCostResetTimestamp : Date.now() + 24 * 60 * 60 * 1000,
-            updatedAt: parsed.updatedAt || Date.now(),
-          };
-        }
-      }
-    } catch {
-      // In-memory fallback
+    if (!fs.existsSync(this.filePath)) {
+      return {
+        dailyEstimatedCostUsd: 0,
+        dailyReservedCostUsd: 0,
+        dailyRequestsTracked: 0,
+        dailyCostResetTimestamp: Date.now() + 24 * 60 * 60 * 1000,
+        updatedAt: Date.now(),
+      };
     }
+
+    let raw: string;
+    try {
+      raw = fs.readFileSync(this.filePath, 'utf8');
+    } catch (readErr: any) {
+      throw new Error(`Failed to read authoritative AI budget state file: ${readErr?.message || readErr}`);
+    }
+
+    let parsed: any;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (jsonErr: any) {
+      throw new Error(`Corrupt AI budget state JSON in ${this.filePath}: ${jsonErr?.message || jsonErr}`);
+    }
+
+    if (
+      !parsed ||
+      typeof parsed !== 'object' ||
+      typeof parsed.dailyEstimatedCostUsd !== 'number' ||
+      isNaN(parsed.dailyEstimatedCostUsd) ||
+      parsed.dailyEstimatedCostUsd < 0
+    ) {
+      throw new Error(`Corrupt AI budget state schema in ${this.filePath}: invalid dailyEstimatedCostUsd`);
+    }
+
     return {
-      dailyEstimatedCostUsd: 0,
-      dailyReservedCostUsd: 0,
-      dailyRequestsTracked: 0,
-      dailyCostResetTimestamp: Date.now() + 24 * 60 * 60 * 1000,
-      updatedAt: Date.now(),
+      dailyEstimatedCostUsd: parsed.dailyEstimatedCostUsd,
+      dailyReservedCostUsd: typeof parsed.dailyReservedCostUsd === 'number' ? parsed.dailyReservedCostUsd : 0,
+      dailyRequestsTracked: typeof parsed.dailyRequestsTracked === 'number' ? parsed.dailyRequestsTracked : 0,
+      dailyCostResetTimestamp: typeof parsed.dailyCostResetTimestamp === 'number' ? parsed.dailyCostResetTimestamp : Date.now() + 24 * 60 * 60 * 1000,
+      updatedAt: parsed.updatedAt || Date.now(),
     };
   }
 
   saveState(state: BudgetState): void {
+    const data = JSON.stringify({ ...state, updatedAt: Date.now() }, null, 2);
+    const tmpPath = `${this.filePath}.${process.pid}.${Date.now()}.tmp`;
     try {
-      const data = JSON.stringify({ ...state, updatedAt: Date.now() }, null, 2);
-      const tmpPath = `${this.filePath}.${process.pid}.${Date.now()}.tmp`;
       fs.writeFileSync(tmpPath, data, 'utf8');
       fs.renameSync(tmpPath, this.filePath);
-    } catch {
-      try {
-        fs.writeFileSync(this.filePath, JSON.stringify(state), 'utf8');
-      } catch (err) {
-        console.warn('Could not persist AI budget state to disk:', err);
-      }
+    } catch (writeErr: any) {
+      throw new Error(`Failed to write authoritative AI budget state file: ${writeErr?.message || writeErr}`);
     }
   }
 }
 
 let activeBudgetStore: SharedBudgetStore = new FileBudgetStore(BUDGET_STORE_FILE);
+let budgetStoreOperationalError: string | null = null;
 
 const AI_DAILY_BUDGET_USD = parseFloat(process.env.AI_DAILY_BUDGET_USD || '50.00');
 
 // Load initial state from persistent store
-const initialBudgetState = activeBudgetStore.getState();
-let dailyEstimatedCostUsd = initialBudgetState.dailyEstimatedCostUsd;
+let dailyEstimatedCostUsd = 0;
 let dailyReservedCostUsd = 0; // Concurrency reservation lock
-let dailyRequestsTracked = initialBudgetState.dailyRequestsTracked;
-let dailyCostResetTimestamp = initialBudgetState.dailyCostResetTimestamp;
+let dailyRequestsTracked = 0;
+let dailyCostResetTimestamp = Date.now() + 24 * 60 * 60 * 1000;
+try {
+  const initialBudgetState = activeBudgetStore.getState();
+  dailyEstimatedCostUsd = initialBudgetState.dailyEstimatedCostUsd;
+  dailyRequestsTracked = initialBudgetState.dailyRequestsTracked;
+  dailyCostResetTimestamp = initialBudgetState.dailyCostResetTimestamp;
+} catch (err: any) {
+  budgetStoreOperationalError = err?.message || 'Failed to read initial budget state';
+  console.warn('Initial AI budget store read warning:', budgetStoreOperationalError);
+}
+
 let reservationCounter = 0;
 export const activeReservations = new Map<string, number>();
 
 function persistBudgetState() {
-  activeBudgetStore.saveState({
-    dailyEstimatedCostUsd,
-    dailyReservedCostUsd,
-    dailyRequestsTracked,
-    dailyCostResetTimestamp,
-  });
+  try {
+    activeBudgetStore.saveState({
+      dailyEstimatedCostUsd,
+      dailyReservedCostUsd,
+      dailyRequestsTracked,
+      dailyCostResetTimestamp,
+    });
+    budgetStoreOperationalError = null;
+  } catch (err: any) {
+    budgetStoreOperationalError = err?.message || 'Failed to persist budget state';
+    throw err;
+  }
 }
 
 function refreshDailyBudgetWindow() {
-  // Sync from store to support multi-process / multi-instance sharing
-  const external = activeBudgetStore.getState();
-  if (external) {
-    if (external.dailyEstimatedCostUsd > dailyEstimatedCostUsd) {
-      dailyEstimatedCostUsd = external.dailyEstimatedCostUsd;
+  try {
+    // Sync from store to support multi-process / multi-instance sharing
+    const external = activeBudgetStore.getState();
+    budgetStoreOperationalError = null;
+    if (external) {
+      if (external.dailyEstimatedCostUsd > dailyEstimatedCostUsd) {
+        dailyEstimatedCostUsd = external.dailyEstimatedCostUsd;
+      }
+      if (external.dailyRequestsTracked > dailyRequestsTracked) {
+        dailyRequestsTracked = external.dailyRequestsTracked;
+      }
+      if (external.dailyCostResetTimestamp) {
+        dailyCostResetTimestamp = external.dailyCostResetTimestamp;
+      }
     }
-    if (external.dailyRequestsTracked > dailyRequestsTracked) {
-      dailyRequestsTracked = external.dailyRequestsTracked;
-    }
-    if (external.dailyCostResetTimestamp) {
-      dailyCostResetTimestamp = external.dailyCostResetTimestamp;
-    }
-  }
 
-  const now = Date.now();
-  if (now >= dailyCostResetTimestamp) {
-    dailyEstimatedCostUsd = 0;
-    dailyReservedCostUsd = 0;
-    dailyRequestsTracked = 0;
-    activeReservations.clear();
-    dailyCostResetTimestamp = now + 24 * 60 * 60 * 1000;
-    persistBudgetState();
+    const now = Date.now();
+    if (now >= dailyCostResetTimestamp) {
+      dailyEstimatedCostUsd = 0;
+      dailyReservedCostUsd = 0;
+      dailyRequestsTracked = 0;
+      activeReservations.clear();
+      dailyCostResetTimestamp = now + 24 * 60 * 60 * 1000;
+      persistBudgetState();
+    }
+  } catch (err: any) {
+    budgetStoreOperationalError = err?.message || 'Budget store synchronization error';
+    throw err;
   }
+}
+
+export function setBudgetStore(store: SharedBudgetStore) {
+  activeBudgetStore = store;
+  budgetStoreOperationalError = null;
 }
 
 export function setBudgetStoreForTesting(store: SharedBudgetStore) {
   activeBudgetStore = store;
+  budgetStoreOperationalError = null;
+}
+
+export function setBudgetStoreOperationalErrorForTesting(err: string | null) {
+  budgetStoreOperationalError = err;
+}
+
+export function getBudgetStoreOperationalError(): string | null {
+  return budgetStoreOperationalError;
 }
 
 export function getBudgetState(): BudgetState {
@@ -475,6 +632,7 @@ export function getBudgetState(): BudgetState {
 }
 
 export function resetBudgetStateForTesting(newEstimatedCost = 0, newReserved = 0) {
+  budgetStoreOperationalError = null;
   dailyEstimatedCostUsd = newEstimatedCost;
   dailyReservedCostUsd = newReserved;
   dailyRequestsTracked = 0;
@@ -483,8 +641,25 @@ export function resetBudgetStateForTesting(newEstimatedCost = 0, newReserved = 0
   persistBudgetState();
 }
 
-export function checkAiBudgetCircuitBreaker(estimatedCostUsd: number = 0.001): { allowed: boolean; reason?: string } {
-  refreshDailyBudgetWindow();
+export function checkAiBudgetCircuitBreaker(estimatedCostUsd: number = 0.001): { allowed: boolean; reason?: string; operationalError?: boolean } {
+  try {
+    refreshDailyBudgetWindow();
+  } catch {
+    return {
+      allowed: false,
+      operationalError: true,
+      reason: 'AI budget verification is temporarily unavailable due to a persistent storage error. Paid AI requests are paused for safety.',
+    };
+  }
+
+  if (budgetStoreOperationalError) {
+    return {
+      allowed: false,
+      operationalError: true,
+      reason: 'AI budget verification is temporarily unavailable due to a persistent storage error. Paid AI requests are paused for safety.',
+    };
+  }
+
   const projectedCost = dailyEstimatedCostUsd + dailyReservedCostUsd + estimatedCostUsd;
   if (projectedCost > AI_DAILY_BUDGET_USD) {
     return {
@@ -500,8 +675,25 @@ export function checkAiBudgetCircuitBreaker(estimatedCostUsd: number = 0.001): {
  * Reserves estimated cost upfront before making provider API request to prevent
  * simultaneous concurrent requests from bypassing budget limits through race conditions.
  */
-export function reserveAiBudget(estimatedCostUsd: number): { allowed: boolean; reservationId?: string; reason?: string } {
-  refreshDailyBudgetWindow();
+export function reserveAiBudget(estimatedCostUsd: number): { allowed: boolean; reservationId?: string; reason?: string; operationalError?: boolean } {
+  try {
+    refreshDailyBudgetWindow();
+  } catch {
+    return {
+      allowed: false,
+      operationalError: true,
+      reason: 'AI budget verification is temporarily unavailable due to a persistent storage error. Paid AI requests are paused for safety.',
+    };
+  }
+
+  if (budgetStoreOperationalError) {
+    return {
+      allowed: false,
+      operationalError: true,
+      reason: 'AI budget verification is temporarily unavailable due to a persistent storage error. Paid AI requests are paused for safety.',
+    };
+  }
+
   const projectedCost = dailyEstimatedCostUsd + dailyReservedCostUsd + estimatedCostUsd;
   if (projectedCost > AI_DAILY_BUDGET_USD) {
     return {
@@ -514,7 +706,18 @@ export function reserveAiBudget(estimatedCostUsd: number): { allowed: boolean; r
   const reservationId = `res_${Date.now()}_${reservationCounter}_${crypto.randomBytes(4).toString('hex')}`;
   dailyReservedCostUsd += estimatedCostUsd;
   activeReservations.set(reservationId, estimatedCostUsd);
-  persistBudgetState();
+
+  try {
+    persistBudgetState();
+  } catch {
+    activeReservations.delete(reservationId);
+    dailyReservedCostUsd = Math.max(0, dailyReservedCostUsd - estimatedCostUsd);
+    return {
+      allowed: false,
+      operationalError: true,
+      reason: 'AI budget state could not be updated. Paid AI requests are paused for safety.',
+    };
+  }
 
   return { allowed: true, reservationId };
 }
@@ -589,10 +792,10 @@ export function createSessionQuotaMiddleware(config: SessionQuotaConfig): expres
     let ipRecord = sessionQuotaStore.get(ipBucketKey);
     if (!ipRecord || ipRecord.resetAt <= now) {
       ipRecord = { count: 1, resetAt: now + windowMs };
-      sessionQuotaStore.set(ipBucketKey, ipRecord);
     } else {
-      ipRecord.count += 1;
+      ipRecord = { count: ipRecord.count + 1, resetAt: ipRecord.resetAt };
     }
+    sessionQuotaStore.set(ipBucketKey, ipRecord);
 
     // 2. Session-level quota tracking (for verified session tokens)
     let sessRecord: { count: number; resetAt: number } | undefined;
@@ -601,10 +804,10 @@ export function createSessionQuotaMiddleware(config: SessionQuotaConfig): expres
       sessRecord = sessionQuotaStore.get(sessBucketKey);
       if (!sessRecord || sessRecord.resetAt <= now) {
         sessRecord = { count: 1, resetAt: now + windowMs };
-        sessionQuotaStore.set(sessBucketKey, sessRecord);
       } else {
-        sessRecord.count += 1;
+        sessRecord = { count: sessRecord.count + 1, resetAt: sessRecord.resetAt };
       }
+      sessionQuotaStore.set(sessBucketKey, sessRecord);
     }
 
     const currentUsage = Math.max(ipRecord.count, sessRecord ? sessRecord.count : ipRecord.count);

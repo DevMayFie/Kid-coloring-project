@@ -1,6 +1,8 @@
 import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'crypto';
+import path from 'path';
+import fs from 'fs';
 import {
   checkAiBudgetCircuitBreaker,
   reserveAiBudget,
@@ -10,6 +12,9 @@ import {
   getBudgetState,
   resetBudgetStateForTesting,
   setBudgetStoreForTesting,
+  setBudgetStoreOperationalErrorForTesting,
+  getBudgetStoreOperationalError,
+  FileBudgetStore,
   activeReservations,
   createSignedSessionId,
   verifySignedSessionId,
@@ -20,6 +25,9 @@ import {
   requireAdminAuth,
   createSessionQuotaMiddleware,
   sessionQuotaStore,
+  FileQuotaStore,
+  setQuotaStoreForTesting,
+  PRODUCTION_CONTENT_SECURITY_POLICY,
 } from '../server';
 import {
   initServerSession,
@@ -254,6 +262,60 @@ describe('ColorKid Production Readiness & Security Test Suite', () => {
       assert.equal(state.dailyEstimatedCostUsd, 12.50);
       assert.equal(state.dailyRequestsTracked, 15);
     });
+
+    it('FileBudgetStore throws error on corrupt or unreadable budget file and stops paid AI requests', () => {
+      const tempTestFile = path.join(process.cwd(), `.test-corrupt-budget-${Date.now()}.json`);
+      try {
+        // Write corrupt JSON
+        fs.writeFileSync(tempTestFile, '{ corrupt json !!! }', 'utf8');
+        const fileStore = new FileBudgetStore(tempTestFile);
+
+        assert.throws(() => {
+          fileStore.getState();
+        }, /Corrupt AI budget state JSON/);
+
+        // Set this store as active and verify checkAiBudgetCircuitBreaker halts paid requests
+        setBudgetStoreForTesting(fileStore);
+        const circuitCheck = checkAiBudgetCircuitBreaker(0.002);
+        assert.equal(circuitCheck.allowed, false);
+        assert.equal(circuitCheck.operationalError, true);
+        assert.match(circuitCheck.reason || '', /temporarily unavailable.*storage error/i);
+
+        // verify reserveAiBudget also halts safely
+        const reserveCheck = reserveAiBudget(0.002);
+        assert.equal(reserveCheck.allowed, false);
+        assert.equal(reserveCheck.operationalError, true);
+      } finally {
+        if (fs.existsSync(tempTestFile)) {
+          fs.unlinkSync(tempTestFile);
+        }
+      }
+    });
+
+    it('FileBudgetStore rejects negative or malformed schema values and does not default to 0 spending', () => {
+      const tempTestFile = path.join(process.cwd(), `.test-invalid-budget-${Date.now()}.json`);
+      try {
+        fs.writeFileSync(tempTestFile, JSON.stringify({ dailyEstimatedCostUsd: 'not-a-number' }), 'utf8');
+        const fileStore = new FileBudgetStore(tempTestFile);
+
+        assert.throws(() => {
+          fileStore.getState();
+        }, /Corrupt AI budget state schema/);
+      } finally {
+        if (fs.existsSync(tempTestFile)) {
+          fs.unlinkSync(tempTestFile);
+        }
+      }
+    });
+
+    it('exhausted budget prevents every additional paid provider call and reservation', () => {
+      resetBudgetStateForTesting(50.00, 0); // Limit is 50.00
+      assert.equal(checkAiBudgetCircuitBreaker(0.001).allowed, false);
+
+      const reservation = reserveAiBudget(0.001);
+      assert.equal(reservation.allowed, false);
+      assert.match(reservation.reason || '', /budget limit.*reached/i);
+    });
   });
 
   describe('Priority 2: Session Quota, IP Normalization & Abuse Prevention', () => {
@@ -406,6 +468,32 @@ describe('ColorKid Production Readiness & Security Test Suite', () => {
         delete (globalThis as any).localStorage;
       }
     });
+
+    it('session quota persists across server restarts and multiple instances when shared FileQuotaStore is used', () => {
+      const tempQuotaFile = path.join(process.cwd(), `.test-quota-${Date.now()}.json`);
+      try {
+        const storeInstance1 = new FileQuotaStore(tempQuotaFile);
+        storeInstance1.set('user_123', { count: 5, resetAt: Date.now() + 60000 });
+
+        // Simulate server restart / second instance by initializing storeInstance2 from same storage file
+        const storeInstance2 = new FileQuotaStore(tempQuotaFile);
+        const record = storeInstance2.get('user_123');
+        assert.ok(record);
+        assert.equal(record.count, 5);
+
+        // Instance 2 increments quota
+        storeInstance2.set('user_123', { count: 6, resetAt: record.resetAt });
+
+        // Instance 1 re-reads and sees the update
+        const updatedRecord = storeInstance1.get('user_123');
+        assert.ok(updatedRecord);
+        assert.equal(updatedRecord.count, 6);
+      } finally {
+        if (fs.existsSync(tempQuotaFile)) {
+          fs.unlinkSync(tempQuotaFile);
+        }
+      }
+    });
   });
 
   describe('Priority 3: IndexedDB Safe Initialization & Hydration Protection', () => {
@@ -496,8 +584,8 @@ describe('ColorKid Production Readiness & Security Test Suite', () => {
     });
 
     it('production Content Security Policy strictly excludes unsafe-inline and unsafe-eval from script-src', () => {
-      const prodCsp =
-        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; media-src 'self' data: blob:; connect-src 'self' https:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self' https://*.google.com https://*.run.app;";
+      // Test the actual production CSP configuration exported directly from server.ts
+      const prodCsp = PRODUCTION_CONTENT_SECURITY_POLICY;
 
       const scriptSrcMatch = prodCsp.match(/script-src\s+([^;]+)/);
       assert.ok(scriptSrcMatch);
@@ -507,6 +595,7 @@ describe('ColorKid Production Readiness & Security Test Suite', () => {
       assert.equal(scriptDirectives.includes("'unsafe-eval'"), false);
       assert.equal(prodCsp.includes("object-src 'none'"), true);
       assert.equal(prodCsp.includes("base-uri 'self'"), true);
+      assert.equal(prodCsp.includes("form-action 'self'"), true);
     });
   });
 });
