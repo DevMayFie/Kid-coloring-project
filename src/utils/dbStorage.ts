@@ -740,7 +740,7 @@ export async function revokeParentalConsentAsync(): Promise<void> {
 }
 
 /**
- * Complete COPPA Data Purge / Right to Erasure
+ * Complete Child Data Purge / Right to Erasure
  * Wipes all stored books, illustrations, favorites, session history, and parental consent
  * from IndexedDB, localStorage, and in-memory caches.
  */

@@ -608,12 +608,12 @@ export const Header: React.FC<HeaderProps> = ({
                     </a>
                   )}
 
-                  {/* COPPA Child Privacy: Erase All Stored Data */}
+                  {/* Child Privacy: Erase All Stored Data */}
                   <button
                     onClick={async () => {
                       setIsMoreMenuOpen(false);
                       const confirmed = window.confirm(
-                        'Erase All Child Data (COPPA / Privacy):\n\nThis will permanently delete all saved coloring books, hero photos, session history, and reset parental consent stored in your browser.\n\nAre you sure you want to proceed?'
+                        'Erase All Child Data:\n\nThis will permanently delete all saved coloring books, hero photos, session history, and reset parental consent stored in your browser.\n\nAre you sure you want to proceed?'
                       );
                       if (confirmed) {
                         await purgeAllChildData();
@@ -622,7 +622,7 @@ export const Header: React.FC<HeaderProps> = ({
                       }
                     }}
                     className="w-full flex items-center justify-between px-3 py-2 text-left text-xs hover:bg-rose-50 dark:hover:bg-rose-950/40 text-rose-700 dark:text-rose-400 transition-colors group cursor-pointer border-t border-rose-100 dark:border-slate-800"
-                    title="Erase all child data and stored illustrations (COPPA compliance)"
+                    title="Erase all child data and stored illustrations"
                   >
                     <div className="flex items-center gap-2.5 min-w-0">
                       <div className="p-1.5 rounded-lg bg-rose-100 dark:bg-rose-900/60 text-rose-700 dark:text-rose-300">
@@ -630,9 +630,9 @@ export const Header: React.FC<HeaderProps> = ({
                       </div>
                       <div className="min-w-0">
                         <div className="font-semibold flex items-center gap-1.5">
-                          <span>Erase All Child Data</span>
+                           <span>Erase All Child Data</span>
                           <span className="text-[10px] bg-rose-100 dark:bg-rose-900/70 text-rose-800 dark:text-rose-300 px-1.5 py-0.2 rounded-full font-bold">
-                            COPPA
+                            Privacy
                           </span>
                         </div>
                         <div className="text-[11px] text-rose-600/80 dark:text-rose-400/80 truncate">

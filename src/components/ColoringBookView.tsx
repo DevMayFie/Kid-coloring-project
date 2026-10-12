@@ -45,6 +45,7 @@ import { VoiceRecorderWidget } from './VoiceRecorderWidget';
 import { getFavorites, saveFavorite, removeFavorite, isFavorite } from '../utils/favoritesStorage';
 import { playChimeSound, speakStory, stopSpeaking } from '../utils/kidAudio';
 import { getThematicCoverDescription, detectThemeCategory } from '../utils/coverIllustrationGenerator';
+import { isPhotoToLineArtEnabled } from '../utils/featureFlags';
 import confetti from 'canvas-confetti';
 
 interface ColoringBookViewProps {
@@ -380,18 +381,20 @@ export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
               <span>Borders</span>
             </button>
 
-            <button
-              type="button"
-              onClick={() => {
-                setIsHeroModalOpen(true);
-                playChimeSound('sparkle');
-              }}
-              className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-linear-to-r from-rose-500 to-pink-500 hover:from-rose-600 hover:to-pink-600 text-white text-xs font-black transition-all cursor-pointer shadow-xs active:scale-95"
-              title="Transform child or pet photo into personalized line art"
-            >
-              <Camera className="w-4 h-4 text-pink-100" />
-              <span>Photo-to-Line-Art</span>
-            </button>
+            {isPhotoToLineArtEnabled && (
+              <button
+                type="button"
+                onClick={() => {
+                  setIsHeroModalOpen(true);
+                  playChimeSound('sparkle');
+                }}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-linear-to-r from-rose-500 to-pink-500 hover:from-rose-600 hover:to-pink-600 text-white text-xs font-black transition-all cursor-pointer shadow-xs active:scale-95"
+                title="Transform child or pet photo into personalized line art"
+              >
+                <Camera className="w-4 h-4 text-pink-100" />
+                <span>Photo-to-Line-Art</span>
+              </button>
+            )}
 
             <button
               type="button"
@@ -1639,37 +1642,39 @@ export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
       )}
 
       {/* SPECIAL INTERACTIVE FEATURES ROW: Photo-to-Line-Art & Master Certificate */}
-      <section className="grid grid-cols-1 md:grid-cols-2 gap-6">
+      <section className={`grid grid-cols-1 ${isPhotoToLineArtEnabled ? 'md:grid-cols-2' : 'max-w-2xl mx-auto'} gap-6`}>
         {/* Card 1: Child & Pet Photo-to-Line-Art */}
-        <div className="bg-linear-to-br from-rose-50 via-pink-50/60 to-amber-50/50 rounded-3xl border border-rose-200 p-5 sm:p-6 shadow-xs flex flex-col justify-between text-left">
-          <div>
-            <div className="flex items-center justify-between mb-3">
-              <span className="px-2.5 py-1 rounded-full bg-rose-500 text-white text-[10px] font-black uppercase tracking-wider flex items-center gap-1">
-                <Camera className="w-3 h-3" /> Child &amp; Pet Feature
-              </span>
-              <span className="text-xs font-bold text-rose-800 bg-rose-100 px-2 py-0.5 rounded-md">
-                100% Local Outline Filter
-              </span>
+        {isPhotoToLineArtEnabled && (
+          <div className="bg-linear-to-br from-rose-50 via-pink-50/60 to-amber-50/50 rounded-3xl border border-rose-200 p-5 sm:p-6 shadow-xs flex flex-col justify-between text-left">
+            <div>
+              <div className="flex items-center justify-between mb-3">
+                <span className="px-2.5 py-1 rounded-full bg-rose-500 text-white text-[10px] font-black uppercase tracking-wider flex items-center gap-1">
+                  <Camera className="w-3 h-3" /> Child &amp; Pet Feature
+                </span>
+                <span className="text-xs font-bold text-rose-800 bg-rose-100 px-2 py-0.5 rounded-md">
+                  100% Local Outline Filter
+                </span>
+              </div>
+              <h3 className="text-lg sm:text-xl font-black text-gray-900 mb-1.5" style={{ fontFamily: "'Fredoka', sans-serif" }}>
+                Star in the Book! 📸
+              </h3>
+              <p className="text-xs sm:text-sm text-gray-700 leading-relaxed mb-4">
+                Turn a picture of {book.childName} or a beloved family pet into a crisp black-and-white coloring page! Adjust line weight, contrast, and clean borders instantly.
+              </p>
             </div>
-            <h3 className="text-lg sm:text-xl font-black text-gray-900 mb-1.5" style={{ fontFamily: "'Fredoka', sans-serif" }}>
-              Star in the Book! 📸
-            </h3>
-            <p className="text-xs sm:text-sm text-gray-700 leading-relaxed mb-4">
-              Turn a picture of {book.childName} or a beloved family pet into a crisp black-and-white coloring page! Adjust line weight, contrast, and clean borders instantly.
-            </p>
+            <button
+              type="button"
+              onClick={() => {
+                setIsHeroModalOpen(true);
+                playChimeSound('sparkle');
+              }}
+              className="w-full py-2.5 px-4 rounded-xl bg-linear-to-r from-rose-500 to-pink-500 hover:from-rose-600 hover:to-pink-600 text-white text-xs font-black flex items-center justify-center gap-2 shadow-xs cursor-pointer transition-all active:scale-95"
+            >
+              <Camera className="w-4 h-4 text-pink-200" />
+              <span>Convert Photo to Line Art &amp; Add Page</span>
+            </button>
           </div>
-          <button
-            type="button"
-            onClick={() => {
-              setIsHeroModalOpen(true);
-              playChimeSound('sparkle');
-            }}
-            className="w-full py-2.5 px-4 rounded-xl bg-linear-to-r from-rose-500 to-pink-500 hover:from-rose-600 hover:to-pink-600 text-white text-xs font-black flex items-center justify-center gap-2 shadow-xs cursor-pointer transition-all active:scale-95"
-          >
-            <Camera className="w-4 h-4 text-pink-200" />
-            <span>Convert Photo to Line Art &amp; Add Page</span>
-          </button>
-        </div>
+        )}
 
         {/* Card 2: Coloring Master Certificate of Completion */}
         <div className="bg-linear-to-br from-amber-50 via-yellow-50/60 to-orange-50/50 rounded-3xl border border-amber-300 p-5 sm:p-6 shadow-xs flex flex-col justify-between text-left">
@@ -1785,16 +1790,18 @@ export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
       )}
 
       {/* Child & Pet Photo-to-Line-Art Modal */}
-      <PersonalizedHeroModal
-        isOpen={isHeroModalOpen}
-        onClose={() => setIsHeroModalOpen(false)}
-        childName={book.childName}
-        theme={book.theme}
-        onApplyHeroPage={(heroData) => {
-          onAddHeroPage?.(heroData);
-          setIsHeroModalOpen(false);
-        }}
-      />
+      {isPhotoToLineArtEnabled && (
+        <PersonalizedHeroModal
+          isOpen={isHeroModalOpen}
+          onClose={() => setIsHeroModalOpen(false)}
+          childName={book.childName}
+          theme={book.theme}
+          onApplyHeroPage={(heroData) => {
+            onAddHeroPage?.(heroData);
+            setIsHeroModalOpen(false);
+          }}
+        />
+      )}
 
       {/* Completion Diploma Certificate Modal */}
       <CertificateModal

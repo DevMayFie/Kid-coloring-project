@@ -8,4 +8,5 @@ coverage/
 !.env.example
 .ai-budget-state.json*
 .ai-quota-state.json*
+.test-*
 *.tmp

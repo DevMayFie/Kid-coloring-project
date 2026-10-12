@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { X, Download, Printer, Check, FileText, Sparkles, BookOpen, Layers, Eye } from 'lucide-react';
 import { ColoringBook } from '../types';
 import { generateColoringBookPdf, GeneratePdfOptions } from '../utils/pdfGenerator';
+import { trackPdfExport } from '../utils/usageTracker';
 import confetti from 'canvas-confetti';
 
 interface PdfExportModalProps {
@@ -73,6 +74,7 @@ export const PdfExportModal: React.FC<PdfExportModalProps> = ({
       const safeTheme = (book.theme || 'adventure').toLowerCase().replace(/[^a-z0-9]/g, '-');
       doc.save(`${safeName}-${safeTheme}-coloring-book.pdf`);
 
+      trackPdfExport('full-book', { pages: totalPages, paperSize });
       triggerCelebration();
       setTimeout(() => {
         setIsProcessing(false);
@@ -106,6 +108,7 @@ export const PdfExportModal: React.FC<PdfExportModalProps> = ({
       };
 
       const doc = await generateColoringBookPdf(book, options);
+      trackPdfExport('direct-print', { pages: totalPages, paperSize });
       const blob = doc.output('blob');
       const blobUrl = URL.createObjectURL(blob);
 

@@ -38,6 +38,7 @@ import { playChimeSound } from './utils/kidAudio';
 import { escapeHtml } from './utils/security';
 import { storageReady } from './utils/dbStorage';
 import { getClientSessionId, initServerSession } from './utils/session';
+import { trackPdfExport, trackRegeneration } from './utils/usageTracker';
 import {
   saveBookToLocalStorage,
   getAutosavedSession,
@@ -540,6 +541,8 @@ export default function App() {
     const pageToRegen = book.pages.find((p) => p.id === pageId);
     if (!pageToRegen) return;
 
+    trackRegeneration('page', { pageId, customPrompt: Boolean(customPrompt) });
+
     setBook((prev) => ({
       ...prev,
       pages: prev.pages.map((p) =>
@@ -560,6 +563,7 @@ export default function App() {
           aspectRatio: book.aspectRatio,
           difficulty: book.difficulty || 'standard',
           artStyle: customArtStyle || pageToRegen.artStyle || book.artStyle || 'classic',
+          isRegeneration: true,
         }),
       });
 
@@ -603,6 +607,7 @@ export default function App() {
 
   // Regenerate Cover
   const handleRegenerateCover = async (forceVectorStyle = false) => {
+    trackRegeneration('cover', { forceVectorStyle });
     setBook((prev) => ({ ...prev, coverStatus: 'generating' }));
     try {
       if (forceVectorStyle) {
@@ -633,6 +638,7 @@ export default function App() {
           aspectRatio: book.aspectRatio,
           difficulty: book.difficulty || 'standard',
           artStyle: book.artStyle || 'classic',
+          isRegeneration: true,
         }),
       });
       const data = await res.json();
@@ -657,6 +663,7 @@ export default function App() {
   // Print single page
   const handlePrintSinglePage = async (page: ColoringPage) => {
     playChimeSound('sparkle');
+    trackPdfExport('single-page', { pageId: page.id });
     const singlePageBook: ColoringBook = {
       ...book,
       pages: [page],
@@ -864,6 +871,7 @@ export default function App() {
 
   // Batch regenerate all pages in book with single click
   const handleBatchRegenerateAll = async (newTheme?: string, refreshPlan: boolean = true, newArtStyle?: ArtStyle) => {
+    trackRegeneration('batch', { newTheme, refreshPlan, newArtStyle });
     const targetTheme = newTheme?.trim() || book.theme;
     const targetArtStyle: ArtStyle = newArtStyle || book.artStyle || 'classic';
     setIsBatchGenerating(true);
@@ -1004,6 +1012,7 @@ export default function App() {
 
   // Regenerate printable cut-out sticker sheet
   const handleRegenerateStickers = async () => {
+    trackRegeneration('stickers');
     setBook((prev) => ({
       ...prev,
       stickerSheet: prev.stickerSheet

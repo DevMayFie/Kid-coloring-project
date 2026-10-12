@@ -2,7 +2,6 @@ import crypto from 'crypto';
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
-import { execSync } from 'child_process';
 import dotenv from 'dotenv';
 import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
@@ -13,6 +12,15 @@ import {
   buildThematicCoverAiPrompt,
   detectThemeCategory,
 } from './src/utils/coverIllustrationGenerator';
+import {
+  usageLogger,
+  recordPdfExport,
+  recordRegeneration,
+  getDailyUsage,
+  getUsageTrends,
+  getUsageLogData,
+  PersistentUsageLogger,
+} from './src/utils/usageLogger';
 
 dotenv.config();
 
@@ -22,8 +30,18 @@ const PORT = 3000;
 // Security: Disable X-Powered-By header to prevent fingerprinting
 app.disable('x-powered-by');
 
-// Security: Comprehensive HTTP Security Headers configured for AI Studio iFrame preview
-const isProduction = process.env.NODE_ENV === 'production' || process.env.ENVIRONMENT === 'production';
+// Security: Environment logic inverted - security protections apply unless NODE_ENV is explicitly 'development'
+export const isProduction = process.env.NODE_ENV !== 'development';
+
+// Feature flag: Photo-to-line-art processing is disabled by default, controlled via environment variable
+export let isPhotoToLineArtEnabled =
+  process.env.ENABLE_PHOTO_TO_LINE_ART === 'true' ||
+  process.env.VITE_ENABLE_PHOTO_TO_LINE_ART === 'true';
+
+export function setPhotoToLineArtEnabledForTesting(enabled: boolean) {
+  isPhotoToLineArtEnabled = enabled;
+}
+
 export const PRODUCTION_CONTENT_SECURITY_POLICY =
   "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; media-src 'self' data: blob:; connect-src 'self' https:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self' https://*.google.com https://*.run.app;";
 
@@ -52,6 +70,9 @@ const photoJsonParser = express.json({ limit: '6mb' });
 
 app.use((req, res, next) => {
   if (req.path === '/api/photo-to-line-art') {
+    if (!isPhotoToLineArtEnabled) {
+      return res.status(404).json({ success: false, error: 'Not found' });
+    }
     return photoJsonParser(req, res, next);
   }
   return standardJsonParser(req, res, next);
@@ -75,10 +96,10 @@ app.use((err: any, _req: express.Request, res: express.Response, next: express.N
 });
 
 // -------------------------------------------------------------
-// CRYPTOGRAPHIC SERVER-SIDE PARENTAL CONSENT VERIFICATION
+// SERVER-SIDE PARENTAL CONSENT TOKEN ISSUANCE AND SIGNING
 // -------------------------------------------------------------
 if (isProduction && !process.env.CONSENT_SECRET) {
-  throw new Error('FATAL: CONSENT_SECRET environment variable is required in production.');
+  throw new Error('FATAL: CONSENT_SECRET environment variable is required outside development.');
 }
 const CONSENT_SECRET = process.env.CONSENT_SECRET || crypto.randomBytes(32).toString('hex');
 
@@ -115,12 +136,12 @@ export function verifyConsentToken(token: string | undefined): { valid: boolean;
   if (!token || typeof token !== 'string') {
     return {
       valid: false,
-      reason: 'Recorded parental consent evidence is required under COPPA/GDPR-K before processing child photos.',
+      reason: 'Recorded parental consent acknowledgment is required before processing child photos.',
     };
   }
   const parts = token.split('.');
   if (parts.length !== 2) {
-    return { valid: false, reason: 'Invalid parental consent verification token format.' };
+    return { valid: false, reason: 'Invalid parental consent token format.' };
   }
   const [b64Payload, signature] = parts;
   const expectedSig = crypto.createHmac('sha256', CONSENT_SECRET).update(b64Payload).digest('base64url');
@@ -191,16 +212,10 @@ const inspirationRateLimiter = createRateLimiter({
   message: 'Theme inspiration rate limit reached. Please wait a moment before requesting more themes.',
 });
 
-const downloadRateLimiter = createRateLimiter({
-  windowMinutes: 10,
-  max: 10,
-  message: 'Project download limit reached. Please wait a few minutes before downloading another archive.',
-});
-
 const consentRateLimiter = createRateLimiter({
   windowMinutes: 10,
   max: 30,
-  message: 'Parental consent verification limit reached. Please wait a few minutes before submitting verification again.',
+  message: 'Parental consent submission limit reached. Please wait a few minutes before submitting again.',
 });
 
 // Rate limiter for session generation to prevent quota resets by cycling sessions
@@ -208,6 +223,13 @@ const sessionRateLimiter = createRateLimiter({
   windowMinutes: 10,
   max: 15,
   message: 'Session creation limit reached. Please wait a few minutes before requesting a new session handshake.',
+});
+
+// Rate limiter for usage tracking log events (prevents log flooding)
+const logTrackingRateLimiter = createRateLimiter({
+  windowMinutes: 5,
+  max: 120,
+  message: 'Usage tracking report limit reached. Please wait a moment.',
 });
 
 // -------------------------------------------------------------
@@ -221,9 +243,13 @@ interface SessionQuotaConfig {
 
 /**
  * Shared Quota & Rate Limit Store abstraction.
- * For single-instance environments, uses memory Map.
- * For multi-instance production deployments, plug in a Redis or Memcached store
- * (e.g., rate-limit-redis or ioredis adapter) to share state across distributed pods.
+ *
+ * ARCHITECTURAL PRODUCTION REQUIREMENT:
+ * FileQuotaStore provides local filesystem persistence across restarts for a SINGLE instance.
+ * File read-modify-write operations are NOT an atomic distributed transaction across multiple processes.
+ * For multi-instance distributed deployments, a shared atomic store (e.g. Redis with atomic INCR
+ * or PostgreSQL with transactional updates) MUST be configured via setQuotaStore().
+ * Without an atomic shared store, production deployments MUST run as a single instance.
  */
 export interface QuotaRecord {
   count: number;
@@ -236,6 +262,49 @@ export interface SharedQuotaStore {
   delete(key: string): void;
   clear(): void;
   entries?(): IterableIterator<[string, QuotaRecord]>;
+  increment?(key: string, windowMs: number): QuotaRecord;
+}
+
+export class MemoryQuotaStore implements SharedQuotaStore {
+  private store = new Map<string, QuotaRecord>();
+
+  get(key: string): QuotaRecord | undefined {
+    const rec = this.store.get(key);
+    if (!rec) return undefined;
+    if (rec.resetAt <= Date.now()) {
+      this.store.delete(key);
+      return undefined;
+    }
+    return rec;
+  }
+
+  set(key: string, value: QuotaRecord): void {
+    this.store.set(key, value);
+  }
+
+  increment(key: string, windowMs: number): QuotaRecord {
+    const now = Date.now();
+    const rec = this.store.get(key);
+    if (!rec || rec.resetAt <= now) {
+      const newRec = { count: 1, resetAt: now + windowMs };
+      this.store.set(key, newRec);
+      return newRec;
+    }
+    rec.count += 1;
+    return rec;
+  }
+
+  delete(key: string): void {
+    this.store.delete(key);
+  }
+
+  clear(): void {
+    this.store.clear();
+  }
+
+  entries() {
+    return this.store.entries();
+  }
 }
 
 const QUOTA_STORE_FILE = process.env.AI_QUOTA_STORE_PATH || path.join(process.cwd(), '.ai-quota-state.json');
@@ -250,40 +319,49 @@ export class FileQuotaStore implements SharedQuotaStore {
   }
 
   reload(): void {
+    if (!fs.existsSync(this.filePath)) {
+      return;
+    }
+    let raw: string;
     try {
-      if (fs.existsSync(this.filePath)) {
-        const raw = fs.readFileSync(this.filePath, 'utf8');
-        const parsed = JSON.parse(raw);
-        if (parsed && typeof parsed === 'object') {
-          const now = Date.now();
-          this.cache.clear();
-          for (const [k, v] of Object.entries(parsed)) {
-            const rec = v as QuotaRecord;
-            if (rec && typeof rec.count === 'number' && typeof rec.resetAt === 'number' && rec.resetAt > now) {
-              this.cache.set(k, rec);
-            }
-          }
+      raw = fs.readFileSync(this.filePath, 'utf8');
+    } catch (readErr: any) {
+      throw new Error(`Failed to read authoritative quota state file: ${readErr?.message || readErr}`);
+    }
+
+    let parsed: any;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (jsonErr: any) {
+      throw new Error(`Corrupt quota state JSON in ${this.filePath}: ${jsonErr?.message || jsonErr}`);
+    }
+
+    if (parsed && typeof parsed === 'object') {
+      const now = Date.now();
+      this.cache.clear();
+      for (const [k, v] of Object.entries(parsed)) {
+        const rec = v as QuotaRecord;
+        if (rec && typeof rec.count === 'number' && typeof rec.resetAt === 'number' && rec.resetAt > now) {
+          this.cache.set(k, rec);
         }
       }
-    } catch {
-      // In-memory fallback
     }
   }
 
   save(): void {
-    try {
-      const now = Date.now();
-      const obj: Record<string, QuotaRecord> = {};
-      for (const [k, v] of this.cache.entries()) {
-        if (v.resetAt > now) {
-          obj[k] = v;
-        }
+    const now = Date.now();
+    const obj: Record<string, QuotaRecord> = {};
+    for (const [k, v] of this.cache.entries()) {
+      if (v.resetAt > now) {
+        obj[k] = v;
       }
-      const tmpPath = `${this.filePath}.${process.pid}.${Date.now()}.tmp`;
+    }
+    const tmpPath = `${this.filePath}.${process.pid}.${Date.now()}.tmp`;
+    try {
       fs.writeFileSync(tmpPath, JSON.stringify(obj, null, 2), 'utf8');
       fs.renameSync(tmpPath, this.filePath);
-    } catch (err) {
-      console.warn('Could not persist quota file to disk:', err);
+    } catch (err: any) {
+      throw new Error(`Failed to write authoritative quota state file: ${err?.message || err}`);
     }
   }
 
@@ -305,6 +383,21 @@ export class FileQuotaStore implements SharedQuotaStore {
     this.save();
   }
 
+  increment(key: string, windowMs: number): QuotaRecord {
+    this.reload();
+    const now = Date.now();
+    const rec = this.cache.get(key);
+    let updated: QuotaRecord;
+    if (!rec || rec.resetAt <= now) {
+      updated = { count: 1, resetAt: now + windowMs };
+    } else {
+      updated = { count: rec.count + 1, resetAt: rec.resetAt };
+    }
+    this.cache.set(key, updated);
+    this.save();
+    return updated;
+  }
+
   delete(key: string): void {
     this.reload();
     this.cache.delete(key);
@@ -323,7 +416,44 @@ export class FileQuotaStore implements SharedQuotaStore {
 }
 
 export let activeQuotaStore: SharedQuotaStore = new FileQuotaStore(QUOTA_STORE_FILE);
-export const sessionQuotaStore = activeQuotaStore;
+
+/**
+ * Proxy object for sessionQuotaStore so that any reference to sessionQuotaStore
+ * always delegates dynamically to activeQuotaStore, ensuring that setQuotaStore
+ * immediately affects all middlewares and periodic cleaners.
+ */
+export const sessionQuotaStore: SharedQuotaStore = {
+  get(key: string) {
+    return activeQuotaStore.get(key);
+  },
+  set(key: string, value: QuotaRecord) {
+    return activeQuotaStore.set(key, value);
+  },
+  delete(key: string) {
+    return activeQuotaStore.delete(key);
+  },
+  clear() {
+    return activeQuotaStore.clear();
+  },
+  entries() {
+    return activeQuotaStore.entries ? activeQuotaStore.entries() : [][Symbol.iterator]();
+  },
+  increment(key: string, windowMs: number) {
+    if (activeQuotaStore.increment) {
+      return activeQuotaStore.increment(key, windowMs);
+    }
+    const now = Date.now();
+    const existing = activeQuotaStore.get(key);
+    let record: QuotaRecord;
+    if (!existing || existing.resetAt <= now) {
+      record = { count: 1, resetAt: now + windowMs };
+    } else {
+      record = { count: existing.count + 1, resetAt: existing.resetAt };
+    }
+    activeQuotaStore.set(key, record);
+    return record;
+  },
+};
 
 export function setQuotaStore(store: SharedQuotaStore) {
   activeQuotaStore = store;
@@ -375,7 +505,7 @@ export function normalizeIp(rawIp: string | undefined): string {
 /**
  * Server-issued, HMAC-signed anonymous session generator.
  * Eliminates trust in arbitrary client-generated identifiers while preserving
- * anonymous COPPA privacy compliance without requiring user account sign-in.
+ * anonymous privacy protections without requiring user account sign-in.
  */
 export function createSignedSessionId(): string {
   const nonce = crypto.randomBytes(16).toString('hex');
@@ -454,12 +584,27 @@ export function getAnonymousSessionId(req: express.Request): string {
 // It is NOT a guaranteed hard spending cap at the AI cloud provider level.
 // Cloud administrators MUST configure hard billing caps, budget alerts, and
 // quotas directly within the Google Cloud / Gemini API billing console.
+//
+// SINGLE-INSTANCE PRODUCTION REQUIREMENT:
+// FileBudgetStore provides local filesystem persistence (atomic temp-file replace)
+// across process restarts and crashes for a SINGLE server instance.
+// File operations are NOT a distributed atomic transaction across multiple pods/instances.
+// In a distributed multi-instance deployment, an atomic shared store (e.g., Redis or SQL)
+// MUST be configured via setBudgetStore(). Production deployments without a shared atomic
+// store must run as a single replica. If authoritative budget state cannot be read or reconciled,
+// the system fails closed to protect against runaway spend.
+
+export interface ReservationRecord {
+  amount: number;
+  createdAt: number;
+}
 
 export interface BudgetState {
   dailyEstimatedCostUsd: number;
   dailyReservedCostUsd: number;
   dailyRequestsTracked: number;
   dailyCostResetTimestamp: number;
+  activeReservations?: Record<string, ReservationRecord>;
   updatedAt?: number;
 }
 
@@ -484,6 +629,7 @@ export class FileBudgetStore implements SharedBudgetStore {
         dailyReservedCostUsd: 0,
         dailyRequestsTracked: 0,
         dailyCostResetTimestamp: Date.now() + 24 * 60 * 60 * 1000,
+        activeReservations: {},
         updatedAt: Date.now(),
       };
     }
@@ -512,11 +658,36 @@ export class FileBudgetStore implements SharedBudgetStore {
       throw new Error(`Corrupt AI budget state schema in ${this.filePath}: invalid dailyEstimatedCostUsd`);
     }
 
+    const activeReservations: Record<string, ReservationRecord> = {};
+    if (parsed.activeReservations && typeof parsed.activeReservations === 'object') {
+      for (const [k, v] of Object.entries(parsed.activeReservations)) {
+        if (typeof v === 'number' && !isNaN(v) && v >= 0) {
+          activeReservations[k] = { amount: v, createdAt: parsed.updatedAt || Date.now() };
+        } else if (
+          v &&
+          typeof v === 'object' &&
+          typeof (v as any).amount === 'number' &&
+          !isNaN((v as any).amount) &&
+          (v as any).amount >= 0
+        ) {
+          activeReservations[k] = {
+            amount: (v as any).amount,
+            createdAt: typeof (v as any).createdAt === 'number' ? (v as any).createdAt : (parsed.updatedAt || Date.now()),
+          };
+        }
+      }
+    }
+
     return {
       dailyEstimatedCostUsd: parsed.dailyEstimatedCostUsd,
-      dailyReservedCostUsd: typeof parsed.dailyReservedCostUsd === 'number' ? parsed.dailyReservedCostUsd : 0,
+      dailyReservedCostUsd:
+        typeof parsed.dailyReservedCostUsd === 'number' && !isNaN(parsed.dailyReservedCostUsd) && parsed.dailyReservedCostUsd >= 0
+          ? parsed.dailyReservedCostUsd
+          : 0,
       dailyRequestsTracked: typeof parsed.dailyRequestsTracked === 'number' ? parsed.dailyRequestsTracked : 0,
-      dailyCostResetTimestamp: typeof parsed.dailyCostResetTimestamp === 'number' ? parsed.dailyCostResetTimestamp : Date.now() + 24 * 60 * 60 * 1000,
+      dailyCostResetTimestamp:
+        typeof parsed.dailyCostResetTimestamp === 'number' ? parsed.dailyCostResetTimestamp : Date.now() + 24 * 60 * 60 * 1000,
+      activeReservations,
       updatedAt: parsed.updatedAt || Date.now(),
     };
   }
@@ -533,36 +704,100 @@ export class FileBudgetStore implements SharedBudgetStore {
   }
 }
 
+export const RESERVATION_EXPIRATION_MS = 5 * 60 * 1000; // 5 minutes max in-flight time for AI operations
+
 let activeBudgetStore: SharedBudgetStore = new FileBudgetStore(BUDGET_STORE_FILE);
 let budgetStoreOperationalError: string | null = null;
 
 const AI_DAILY_BUDGET_USD = parseFloat(process.env.AI_DAILY_BUDGET_USD || '50.00');
 
-// Load initial state from persistent store
 let dailyEstimatedCostUsd = 0;
 let dailyReservedCostUsd = 0; // Concurrency reservation lock
 let dailyRequestsTracked = 0;
 let dailyCostResetTimestamp = Date.now() + 24 * 60 * 60 * 1000;
-try {
-  const initialBudgetState = activeBudgetStore.getState();
-  dailyEstimatedCostUsd = initialBudgetState.dailyEstimatedCostUsd;
-  dailyRequestsTracked = initialBudgetState.dailyRequestsTracked;
-  dailyCostResetTimestamp = initialBudgetState.dailyCostResetTimestamp;
-} catch (err: any) {
-  budgetStoreOperationalError = err?.message || 'Failed to read initial budget state';
-  console.warn('Initial AI budget store read warning:', budgetStoreOperationalError);
-}
 
 let reservationCounter = 0;
-export const activeReservations = new Map<string, number>();
+export const activeReservations = new Map<string, ReservationRecord>();
+export const finalizedReservations = new Set<string>();
+
+/**
+ * Reconciles reservations from store on startup, restart, and synchronization.
+ * Prevents server restarts from silently dropping outstanding reservations,
+ * while expiring orphaned reservations after RESERVATION_EXPIRATION_MS.
+ */
+export function reconcileReservationsFromStore(storeState: BudgetState) {
+  const now = Date.now();
+  if (storeState.activeReservations && typeof storeState.activeReservations === 'object') {
+    for (const [resId, item] of Object.entries(storeState.activeReservations)) {
+      if (finalizedReservations.has(resId)) continue;
+      const amount = typeof item === 'number' ? item : item.amount;
+      const createdAt = typeof item === 'object' && typeof item.createdAt === 'number' ? item.createdAt : now;
+      if (now - createdAt < RESERVATION_EXPIRATION_MS) {
+        if (!activeReservations.has(resId)) {
+          activeReservations.set(resId, { amount, createdAt });
+        }
+      }
+    }
+  }
+
+  // Purge any local expired or finalized reservations
+  for (const [resId, rec] of activeReservations.entries()) {
+    if (finalizedReservations.has(resId)) {
+      activeReservations.delete(resId);
+      continue;
+    }
+    if (now - rec.createdAt >= RESERVATION_EXPIRATION_MS) {
+      activeReservations.delete(resId);
+    }
+  }
+
+  let localSum = 0;
+  for (const rec of activeReservations.values()) {
+    localSum += rec.amount;
+  }
+
+  // Ensure dailyReservedCostUsd is restored and never zeroed on restart
+  if (localSum > 0) {
+    dailyReservedCostUsd = localSum;
+  } else if (typeof storeState.dailyReservedCostUsd === 'number' && storeState.dailyReservedCostUsd > 0) {
+    dailyReservedCostUsd = storeState.dailyReservedCostUsd;
+  } else {
+    dailyReservedCostUsd = 0;
+  }
+}
+
+export function initializeBudgetState() {
+  try {
+    const initialBudgetState = activeBudgetStore.getState();
+    dailyEstimatedCostUsd = initialBudgetState.dailyEstimatedCostUsd;
+    dailyRequestsTracked = initialBudgetState.dailyRequestsTracked;
+    dailyCostResetTimestamp = initialBudgetState.dailyCostResetTimestamp;
+    dailyReservedCostUsd = initialBudgetState.dailyReservedCostUsd || 0;
+    activeReservations.clear();
+    finalizedReservations.clear();
+    reconcileReservationsFromStore(initialBudgetState);
+    budgetStoreOperationalError = null;
+  } catch (err: any) {
+    budgetStoreOperationalError = err?.message || 'Failed to read initial budget state';
+    console.warn('Initial AI budget store read warning:', budgetStoreOperationalError);
+  }
+}
+
+// Initial bootstrap
+initializeBudgetState();
 
 function persistBudgetState() {
   try {
+    const activeResMap: Record<string, ReservationRecord> = {};
+    for (const [k, v] of activeReservations.entries()) {
+      activeResMap[k] = v;
+    }
     activeBudgetStore.saveState({
       dailyEstimatedCostUsd,
       dailyReservedCostUsd,
       dailyRequestsTracked,
       dailyCostResetTimestamp,
+      activeReservations: activeResMap,
     });
     budgetStoreOperationalError = null;
   } catch (err: any) {
@@ -573,7 +808,6 @@ function persistBudgetState() {
 
 function refreshDailyBudgetWindow() {
   try {
-    // Sync from store to support multi-process / multi-instance sharing
     const external = activeBudgetStore.getState();
     budgetStoreOperationalError = null;
     if (external) {
@@ -586,6 +820,7 @@ function refreshDailyBudgetWindow() {
       if (external.dailyCostResetTimestamp) {
         dailyCostResetTimestamp = external.dailyCostResetTimestamp;
       }
+      reconcileReservationsFromStore(external);
     }
 
     const now = Date.now();
@@ -594,6 +829,7 @@ function refreshDailyBudgetWindow() {
       dailyReservedCostUsd = 0;
       dailyRequestsTracked = 0;
       activeReservations.clear();
+      finalizedReservations.clear();
       dailyCostResetTimestamp = now + 24 * 60 * 60 * 1000;
       persistBudgetState();
     }
@@ -606,11 +842,13 @@ function refreshDailyBudgetWindow() {
 export function setBudgetStore(store: SharedBudgetStore) {
   activeBudgetStore = store;
   budgetStoreOperationalError = null;
+  initializeBudgetState();
 }
 
 export function setBudgetStoreForTesting(store: SharedBudgetStore) {
   activeBudgetStore = store;
   budgetStoreOperationalError = null;
+  initializeBudgetState();
 }
 
 export function setBudgetStoreOperationalErrorForTesting(err: string | null) {
@@ -637,6 +875,7 @@ export function resetBudgetStateForTesting(newEstimatedCost = 0, newReserved = 0
   dailyReservedCostUsd = newReserved;
   dailyRequestsTracked = 0;
   activeReservations.clear();
+  finalizedReservations.clear();
   dailyCostResetTimestamp = Date.now() + 24 * 60 * 60 * 1000;
   persistBudgetState();
 }
@@ -705,7 +944,7 @@ export function reserveAiBudget(estimatedCostUsd: number): { allowed: boolean; r
   reservationCounter += 1;
   const reservationId = `res_${Date.now()}_${reservationCounter}_${crypto.randomBytes(4).toString('hex')}`;
   dailyReservedCostUsd += estimatedCostUsd;
-  activeReservations.set(reservationId, estimatedCostUsd);
+  activeReservations.set(reservationId, { amount: estimatedCostUsd, createdAt: Date.now() });
 
   try {
     persistBudgetState();
@@ -723,15 +962,92 @@ export function reserveAiBudget(estimatedCostUsd: number): { allowed: boolean; r
 }
 
 /**
+ * Atomically expands an existing reservation for a fallback provider attempt.
+ * If additional budget is unavailable, leaves original reservation intact so it
+ * can be finalized/committed accurately, while signaling that fallback must NOT proceed.
+ */
+export function reserveAdditionalAiBudget(
+  reservationId: string | undefined,
+  additionalCostUsd: number
+): { allowed: boolean; reason?: string; operationalError?: boolean } {
+  if (!reservationId || !activeReservations.has(reservationId)) {
+    return {
+      allowed: false,
+      reason: 'Invalid or missing reservation ID for fallback expansion.',
+    };
+  }
+
+  try {
+    refreshDailyBudgetWindow();
+  } catch {
+    return {
+      allowed: false,
+      operationalError: true,
+      reason: 'AI budget verification is temporarily unavailable due to a persistent storage error. Paid AI requests are paused for safety.',
+    };
+  }
+
+  if (budgetStoreOperationalError) {
+    return {
+      allowed: false,
+      operationalError: true,
+      reason: 'AI budget verification is temporarily unavailable due to a persistent storage error. Paid AI requests are paused for safety.',
+    };
+  }
+
+  const projectedCost = dailyEstimatedCostUsd + dailyReservedCostUsd + additionalCostUsd;
+  if (projectedCost > AI_DAILY_BUDGET_USD) {
+    return {
+      allowed: false,
+      reason: `Daily AI usage spending budget limit ($${AI_DAILY_BUDGET_USD.toFixed(2)} estimated) reached. Fallback request cannot be scheduled.`,
+    };
+  }
+
+  const existingRec = activeReservations.get(reservationId)!;
+  const newAmount = existingRec.amount + additionalCostUsd;
+  dailyReservedCostUsd += additionalCostUsd;
+  activeReservations.set(reservationId, { amount: newAmount, createdAt: existingRec.createdAt });
+
+  try {
+    persistBudgetState();
+  } catch {
+    activeReservations.set(reservationId, existingRec);
+    dailyReservedCostUsd = Math.max(0, dailyReservedCostUsd - additionalCostUsd);
+    return {
+      allowed: false,
+      operationalError: true,
+      reason: 'AI budget state could not be updated. Paid AI requests are paused for safety.',
+    };
+  }
+
+  return { allowed: true };
+}
+
+/**
  * Commits usage upon completion of API call (success or provider failure).
+ * Avoids charging a reservation twice by recording finalized reservations.
  */
 export function commitAiBudget(reservationId: string | undefined, actualCostUsd?: number) {
+  if (reservationId && finalizedReservations.has(reservationId)) {
+    // Avoid charging twice!
+    return;
+  }
+
   refreshDailyBudgetWindow();
   let reservedAmount = 0;
   if (reservationId && activeReservations.has(reservationId)) {
-    reservedAmount = activeReservations.get(reservationId) || 0;
+    const rec = activeReservations.get(reservationId)!;
+    reservedAmount = rec.amount;
     activeReservations.delete(reservationId);
     dailyReservedCostUsd = Math.max(0, dailyReservedCostUsd - reservedAmount);
+  }
+
+  if (reservationId) {
+    finalizedReservations.add(reservationId);
+    if (finalizedReservations.size > 2000) {
+      const first = finalizedReservations.values().next().value;
+      if (first) finalizedReservations.delete(first);
+    }
   }
 
   const finalCost = typeof actualCostUsd === 'number' ? actualCostUsd : reservedAmount;
@@ -744,12 +1060,92 @@ export function commitAiBudget(reservationId: string | undefined, actualCostUsd?
  * Releases reservation if the request was aborted before contacting provider.
  */
 export function releaseAiBudgetReservation(reservationId: string | undefined) {
-  if (reservationId && activeReservations.has(reservationId)) {
-    const reservedAmount = activeReservations.get(reservationId) || 0;
+  if (!reservationId) return;
+  if (finalizedReservations.has(reservationId)) {
+    return;
+  }
+  finalizedReservations.add(reservationId);
+  if (finalizedReservations.size > 2000) {
+    const first = finalizedReservations.values().next().value;
+    if (first) finalizedReservations.delete(first);
+  }
+
+  if (activeReservations.has(reservationId)) {
+    const rec = activeReservations.get(reservationId)!;
     activeReservations.delete(reservationId);
-    dailyReservedCostUsd = Math.max(0, dailyReservedCostUsd - reservedAmount);
+    dailyReservedCostUsd = Math.max(0, dailyReservedCostUsd - rec.amount);
     persistBudgetState();
   }
+}
+
+/**
+ * Startup check: Logs a loud warning if the budget or quota store is file-based
+ * and the server is not configured as single-instance.
+ */
+export function checkSingleInstanceDeployment(): {
+  isFileBased: boolean;
+  isSingleInstance: boolean;
+  warningIssued: boolean;
+} {
+  const isFileBudget = activeBudgetStore instanceof FileBudgetStore;
+  const isFileQuota = activeQuotaStore instanceof FileQuotaStore;
+  const isFileBased = isFileBudget || isFileQuota;
+
+  const isConfiguredSingleInstance =
+    process.env.SINGLE_INSTANCE === 'true' ||
+    process.env.AI_SINGLE_INSTANCE === 'true' ||
+    process.env.CLOUD_RUN_MAX_INSTANCES === '1' ||
+    process.env.MAX_INSTANCES === '1';
+
+  let warningIssued = false;
+
+  if (isFileBased && !isConfiguredSingleInstance) {
+    warningIssued = true;
+    console.warn(
+      '\n' +
+      '********************************************************************************\n' +
+      '🚨 LOUD DEPLOYMENT WARNING: FILE-BASED BUDGET / QUOTA STORE DETECTED!\n' +
+      '--------------------------------------------------------------------------------\n' +
+      'The AI daily budget and/or session quota stores are backed by local files.\n' +
+      'File-based stores are ONLY safe and accurate when running as a SINGLE INSTANCE.\n' +
+      '\n' +
+      'If deployed with multiple container instances (e.g. Cloud Run max-instances > 1),\n' +
+      'each container instance will maintain its own isolated budget and quota state.\n' +
+      'This will cause aggregate spending to multiply and exceed your intended daily cap!\n' +
+      '\n' +
+      'MANDATORY CLOUD RUN DEPLOYMENT REQUIREMENT:\n' +
+      '  1. Run with max-instances=1 on Cloud Run (or set SINGLE_INSTANCE=true in env).\n' +
+      '  2. Set Google Cloud billing budgets and API spend caps in Google Cloud Console.\n' +
+      '  3. To scale beyond a single instance, configure shared atomic stores via\n' +
+      '     setBudgetStore() and setQuotaStore() (e.g., PostgreSQL/Cloud SQL or Memorystore).\n' +
+      '********************************************************************************\n'
+    );
+  }
+
+  return { isFileBased, isSingleInstance: isConfiguredSingleInstance, warningIssued };
+}
+
+/**
+ * Verifies production deployment architecture.
+ * Warns if multi-instance is configured without distributed atomic stores.
+ */
+export function verifyProductionDeploymentConfiguration(): { singleInstanceOnly: boolean; distributedSafetyConfigured: boolean } {
+  const isDistributedBudget = !(activeBudgetStore instanceof FileBudgetStore);
+  const isDistributedQuota = !(activeQuotaStore instanceof FileQuotaStore);
+  const distributedSafetyConfigured = isDistributedBudget && isDistributedQuota;
+
+  if (process.env.AI_MULTI_INSTANCE_DEPLOYMENT === 'true' && !distributedSafetyConfigured) {
+    console.warn(
+      'CRITICAL DEPLOYMENT WARNING: AI_MULTI_INSTANCE_DEPLOYMENT is enabled, but single-instance File stores are in use. ' +
+        'FileBudgetStore and FileQuotaStore cannot provide cross-instance distributed atomic locks. ' +
+        'Configure shared atomic stores via setBudgetStore() and setQuotaStore() before deploying multiple replicas.'
+    );
+  }
+
+  return {
+    singleInstanceOnly: !distributedSafetyConfigured,
+    distributedSafetyConfigured,
+  };
 }
 
 /**
@@ -787,27 +1183,45 @@ export function createSessionQuotaMiddleware(config: SessionQuotaConfig): expres
     const now = Date.now();
     const windowMs = config.windowMinutes * 60 * 1000;
 
-    // 1. IP-level quota tracking: cycling or obtaining fresh sessions cannot bypass IP limit
-    const ipBucketKey = `${config.endpointName}:ip:${clientIp}`;
-    let ipRecord = sessionQuotaStore.get(ipBucketKey);
-    if (!ipRecord || ipRecord.resetAt <= now) {
-      ipRecord = { count: 1, resetAt: now + windowMs };
-    } else {
-      ipRecord = { count: ipRecord.count + 1, resetAt: ipRecord.resetAt };
-    }
-    sessionQuotaStore.set(ipBucketKey, ipRecord);
+    let ipRecord: QuotaRecord | undefined;
+    let sessRecord: QuotaRecord | undefined;
 
-    // 2. Session-level quota tracking (for verified session tokens)
-    let sessRecord: { count: number; resetAt: number } | undefined;
-    if (verified.valid && verified.rawId) {
-      const sessBucketKey = `${config.endpointName}:sess:${verified.rawId}`;
-      sessRecord = sessionQuotaStore.get(sessBucketKey);
-      if (!sessRecord || sessRecord.resetAt <= now) {
-        sessRecord = { count: 1, resetAt: now + windowMs };
+    try {
+      // 1. IP-level quota tracking: cycling or obtaining fresh sessions cannot bypass IP limit
+      const ipBucketKey = `${config.endpointName}:ip:${clientIp}`;
+      if (sessionQuotaStore.increment) {
+        ipRecord = sessionQuotaStore.increment(ipBucketKey, windowMs);
       } else {
-        sessRecord = { count: sessRecord.count + 1, resetAt: sessRecord.resetAt };
+        ipRecord = sessionQuotaStore.get(ipBucketKey);
+        if (!ipRecord || ipRecord.resetAt <= now) {
+          ipRecord = { count: 1, resetAt: now + windowMs };
+        } else {
+          ipRecord = { count: ipRecord.count + 1, resetAt: ipRecord.resetAt };
+        }
+        sessionQuotaStore.set(ipBucketKey, ipRecord);
       }
-      sessionQuotaStore.set(sessBucketKey, sessRecord);
+
+      // 2. Session-level quota tracking (for verified session tokens)
+      if (verified.valid && verified.rawId) {
+        const sessBucketKey = `${config.endpointName}:sess:${verified.rawId}`;
+        if (sessionQuotaStore.increment) {
+          sessRecord = sessionQuotaStore.increment(sessBucketKey, windowMs);
+        } else {
+          sessRecord = sessionQuotaStore.get(sessBucketKey);
+          if (!sessRecord || sessRecord.resetAt <= now) {
+            sessRecord = { count: 1, resetAt: now + windowMs };
+          } else {
+            sessRecord = { count: sessRecord.count + 1, resetAt: sessRecord.resetAt };
+          }
+          sessionQuotaStore.set(sessBucketKey, sessRecord);
+        }
+      }
+    } catch (quotaStoreErr: any) {
+      console.error('Quota store failure in sessionQuotaMiddleware:', quotaStoreErr);
+      return res.status(503).json({
+        success: false,
+        error: 'Quota verification is temporarily unavailable due to a persistent storage error. Requests are paused for safety.',
+      });
     }
 
     const currentUsage = Math.max(ipRecord.count, sessRecord ? sessRecord.count : ipRecord.count);
@@ -835,18 +1249,18 @@ export function createSessionQuotaMiddleware(config: SessionQuotaConfig): expres
  * Rejects query parameters to prevent log leakage (CWE-598).
  */
 export function requireAdminAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const configuredKey = process.env.ADMIN_KEY;
+  if (!configuredKey) {
+    return res.status(404).json({
+      success: false,
+      error: 'Not found',
+    });
+  }
+
   if (req.query.adminKey || req.query['admin-key'] || req.query.key || req.query.token) {
     return res.status(400).json({
       success: false,
       error: 'Admin authentication key must not be passed in URL query parameters. Please use the X-Admin-Key or Authorization header.',
-    });
-  }
-
-  const configuredKey = process.env.ADMIN_KEY || process.env.ADMIN_SECRET;
-  if (!configuredKey && isProduction) {
-    return res.status(403).json({
-      success: false,
-      error: 'Admin functionality is disabled: ADMIN_KEY is not configured in this production environment.',
     });
   }
 
@@ -861,16 +1275,8 @@ export function requireAdminAuth(req: express.Request, res: express.Response, ne
     });
   }
 
-  const targetKey = configuredKey || (isProduction ? '' : 'dev-admin-key');
-  if (!targetKey) {
-    return res.status(403).json({
-      success: false,
-      error: 'Admin functionality is disabled: ADMIN_KEY is not configured.',
-    });
-  }
-
   const keyBuf = Buffer.from(adminKey);
-  const targetBuf = Buffer.from(targetKey);
+  const targetBuf = Buffer.from(configuredKey);
   if (keyBuf.length !== targetBuf.length || !crypto.timingSafeEqual(keyBuf, targetBuf)) {
     return res.status(401).json({
       success: false,
@@ -1107,6 +1513,7 @@ const GenerateImageSchema = z
     activityMode: z.enum(['standard', 'color-by-numbers', 'dot-to-dot']).default('standard'),
     artStyle: z.enum(['classic', 'kawaii', 'storybook', 'comic', 'manga-chibi', 'geometric-mandala', 'vintage-woodcut', 'retro-cartoon']).default('classic'),
     modelPreference: z.enum(['auto', 'fast', 'pro']).default('auto'),
+    isRegeneration: z.boolean().optional(),
   })
   .strip();
 
@@ -1121,6 +1528,24 @@ const GenerateCoverSchema = z
     styleVariant: z.enum(['mascot', 'emblem', 'adventure']).default('mascot'),
     artStyle: z.enum(['classic', 'kawaii', 'storybook', 'comic', 'manga-chibi', 'geometric-mandala', 'vintage-woodcut', 'retro-cartoon']).optional().default('classic'),
     forceVector: z.boolean().default(false),
+    isRegeneration: z.boolean().optional(),
+  })
+  .strip();
+
+const PdfExportLogSchema = z
+  .object({
+    exportType: createSafeTextSchema({ fieldName: 'exportType', min: 1, max: 50 }).optional().default('full-book'),
+    metadata: z.record(z.string(), z.any()).optional(),
+    date: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, 'Date must be formatted as YYYY-MM-DD').optional(),
+  })
+  .strip();
+
+const RegenerationLogSchema = z
+  .object({
+    regenType: createSafeTextSchema({ fieldName: 'regenType', min: 1, max: 50 }).optional(),
+    type: createSafeTextSchema({ fieldName: 'type', min: 1, max: 50 }).optional(),
+    metadata: z.record(z.string(), z.any()).optional(),
+    date: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, 'Date must be formatted as YYYY-MM-DD').optional(),
   })
   .strip();
 
@@ -1155,7 +1580,7 @@ const PhotoToLineArtSchema = z
     sceneSetting: createSafeTextSchema({ fieldName: 'sceneSetting', min: 0, max: 200 }).default(
       'exploring a whimsical wonderland'
     ),
-    parentConsentToken: z.string().trim().min(1, 'Parental consent token cannot be empty.'),
+    parentConsentToken: z.string().trim().min(1, 'Parental consent token cannot be empty.').optional(),
     sessionId: z
       .string()
       .trim()
@@ -1209,7 +1634,7 @@ const VerifyParentalConsentSchema = z
       .min(1, 'A nonempty session ID is required when issuing a consent token.')
       .max(120),
     coppaConfirmed: z.boolean().refine((val) => val === true, {
-      message: 'Explicit COPPA parental consent confirmation is required to record parental consent.',
+      message: 'Parental consent confirmation is required to record parental consent.',
     }),
   })
   .strip();
@@ -1263,93 +1688,8 @@ app.get('/api/health', (_req, res) => {
   res.json({
     status: 'ok',
     hasApiKey: Boolean(process.env.GEMINI_API_KEY),
+    photoToLineArtEnabled: isPhotoToLineArtEnabled,
   });
-});
-
-// Project source export endpoint with rate limiting, caching, and clean filtering
-// Protected or disabled in production to prevent arbitrary source code downloads
-app.get('/api/download-project', downloadRateLimiter, (req, res) => {
-  // SECURITY: Unconditionally reject passing admin keys via URL query parameters (CWE-598)
-  // to prevent leakage in server access logs, browser history, referrers, and proxy logs
-  if (req.query.adminKey || req.query['admin-key'] || req.query.key || req.query.admin_key || req.query.token) {
-    return res.status(400).json({
-      success: false,
-      error: 'Admin authentication key must not be passed in URL query parameters. Please use the X-Admin-Key or Authorization header.',
-    });
-  }
-
-  // PRODUCTION HARDENING: Source archive download must not exist in deployed production environments
-  if (isProduction || process.env.DISABLE_SOURCE_DOWNLOAD === 'true') {
-    return res.status(404).json({
-      success: false,
-      error: 'Project source archive download is disabled in deployed production environments.',
-    });
-  }
-
-  // In non-production environments, require admin authentication if ADMIN_KEY is configured
-  const configuredAdminKey = process.env.ADMIN_KEY || process.env.ADMIN_SECRET;
-  if (configuredAdminKey) {
-    const authHeader = req.headers['authorization'];
-    const bearerKey = authHeader?.startsWith('Bearer ') ? authHeader.slice(7).trim() : undefined;
-    const adminKey = (req.headers['x-admin-key'] as string | undefined)?.trim() || bearerKey;
-    if (!adminKey) {
-      return res.status(401).json({
-        success: false,
-        error: 'Unauthorized: Admin authentication required to download project source archive.',
-      });
-    }
-    const keyBuf = Buffer.from(adminKey);
-    const targetBuf = Buffer.from(configuredAdminKey);
-    if (keyBuf.length !== targetBuf.length || !crypto.timingSafeEqual(keyBuf, targetBuf)) {
-      return res.status(401).json({
-        success: false,
-        error: 'Unauthorized: Invalid admin credentials.',
-      });
-    }
-  }
-
-  try {
-    const zipPath = path.join('/tmp', 'project-source.zip');
-    let shouldRegenerate = true;
-
-    // Cache check: if zip was generated within the last 60 seconds, reuse it
-    try {
-      if (fs.existsSync(zipPath)) {
-        const stats = fs.statSync(zipPath);
-        const ageMs = Date.now() - stats.mtimeMs;
-        if (ageMs < 60 * 1000 && stats.size > 1000) {
-          shouldRegenerate = false;
-        }
-      }
-    } catch {}
-
-    if (shouldRegenerate) {
-      const pyScript = `
-import zipfile, os
-base_dir = os.path.abspath(os.getcwd())
-zip_path = '/tmp/project-source.zip'
-exclude_dirs = {'node_modules', '.git', 'dist', 'build', '.cache'}
-with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-    for root, dirs, files in os.walk(base_dir):
-        dirs[:] = [d for d in dirs if d not in exclude_dirs]
-        for f in files:
-            if f.endswith('.zip') or f.startswith('.env'):
-                continue
-            full_path = os.path.join(root, f)
-            rel_path = os.path.relpath(full_path, base_dir)
-            zipf.write(full_path, rel_path)
-`;
-      execSync(`python3 -c "${pyScript.replace(/"/g, '\\"')}"`);
-    }
-
-    res.setHeader('Content-Type', 'application/zip');
-    res.setHeader('Content-Disposition', 'attachment; filename="coloring-book-studio-latest.zip"');
-    const fileStream = fs.createReadStream(zipPath);
-    fileStream.pipe(res);
-  } catch (err: any) {
-    console.error('Failed to generate project archive:', err?.message);
-    res.status(500).json({ error: 'Failed to generate project archive' });
-  }
 });
 
 // Handler for both /api/plan-book and /api/generate-plan
@@ -1579,6 +1919,17 @@ CRITICAL RULES:
           });
         }
         console.warn('gemini-3.8-flash planning high demand / error, attempting fallback to gemini-3.1-flash-lite:', primaryErr?.message);
+        const additionalRes = reserveAdditionalAiBudget(budgetReservation.reservationId, estimatedPlanCost);
+        if (!additionalRes.allowed) {
+          console.warn('Insufficient budget for plan fallback attempt:', additionalRes.reason);
+          commitAiBudget(budgetReservation.reservationId, estimatedPlanCost * providerAttempts);
+          reservationHandled = true;
+          return res.status(429).json({
+            success: false,
+            error: additionalRes.reason || 'Daily AI usage budget reached. Fallback model could not be scheduled.',
+            budgetExceeded: true,
+          });
+        }
         providerAttempts += 1;
         response = await ai.models.generateContent({
           model: 'gemini-3.1-flash-lite',
@@ -1797,7 +2148,12 @@ app.post('/api/generate-image', imageRateLimiter, imageSessionQuota, async (req,
       activityMode,
       artStyle = 'classic',
       modelPreference,
+      isRegeneration,
     } = parsed.data;
+
+    if (isRegeneration) {
+      usageLogger.recordRegeneration('page');
+    }
 
     const promptCheck = validateKidContentServer(rawPrompt);
     if (!promptCheck.valid) {
@@ -1896,6 +2252,17 @@ app.post('/api/generate-image', imageRateLimiter, imageSessionQuota, async (req,
         console.warn(`${primaryModel} call encountered issue, attempting secondary fallback:`, primaryErr?.message);
         // Only fallback on transient network/overload errors
         const fallbackModel = primaryModel === 'gemini-3-pro-image' ? 'gemini-3.1-flash-lite-image' : 'gemini-3-pro-image';
+        const additionalRes = reserveAdditionalAiBudget(budgetReservation.reservationId, estimatedImageCost);
+        if (!additionalRes.allowed) {
+          console.warn('Insufficient budget for image fallback attempt:', additionalRes.reason);
+          commitAiBudget(budgetReservation.reservationId, estimatedImageCost * providerAttempts);
+          reservationHandled = true;
+          return res.status(429).json({
+            success: false,
+            error: additionalRes.reason || 'Daily AI image generation budget limit reached. Fallback model could not be scheduled.',
+            budgetExceeded: true,
+          });
+        }
         providerAttempts += 1;
         response = await ai.models.generateContent({
           model: fallbackModel,
@@ -1974,7 +2341,12 @@ app.post('/api/generate-cover', imageRateLimiter, coverSessionQuota, async (req,
       styleVariant,
       artStyle = 'classic',
       forceVector,
+      isRegeneration,
     } = parsed.data;
+
+    if (isRegeneration) {
+      usageLogger.recordRegeneration('cover');
+    }
 
     const rawTheme = sanitizeSafeString(inputTheme, 100) || 'space dinosaurs';
     const rawChildName = sanitizeSafeString(inputChildName, 40) || 'Explorer';
@@ -2050,6 +2422,20 @@ app.post('/api/generate-cover', imageRateLimiter, coverSessionQuota, async (req,
           });
         }
         console.warn('gemini-3-pro-image cover failed, trying gemini-3.1-flash-lite-image fallback:', primaryErr?.message);
+        const additionalRes = reserveAdditionalAiBudget(budgetReservation.reservationId, estimatedCoverCost);
+        if (!additionalRes.allowed) {
+          console.warn('Insufficient budget for AI cover fallback attempt, using instant vector art');
+          commitAiBudget(budgetReservation.reservationId, estimatedCoverCost * providerAttempts);
+          reservationHandled = true;
+          const vectorSvg = createThematicCoverSvg(rawTheme, rawChildName, difficulty, styleVariant);
+          return res.json({
+            success: true,
+            imageUrl: vectorSvg,
+            resolution: chosenSize,
+            isVectorIllustration: true,
+            notice: 'Daily AI generation budget reached for fallback; generated instant vector illustration instead.',
+          });
+        }
         providerAttempts += 1;
         response = await ai.models.generateContent({
           model: 'gemini-3.1-flash-lite-image',
@@ -2151,8 +2537,62 @@ app.get('/api/admin/usage-budget', requireAdminAuth, (_req, res) => {
   });
 });
 
-// Endpoint: Issue cryptographically signed tokenized evidence of adult parental consent affirmation (COPPA / GDPR-K)
-// Note: This records adult consent affirmation and session binding; it is not independent proof of physical parental identity.
+// Endpoint: Log daily PDF export count in persistent JSON store
+app.post('/api/logs/pdf-export', logTrackingRateLimiter, (req, res) => {
+  try {
+    const parsed = validateWithZod(PdfExportLogSchema, req.body || {});
+    if (!parsed.success) {
+      return res.status(400).json({ success: false, error: parsed.error });
+    }
+    const { exportType = 'full-book', date } = parsed.data;
+    const record = usageLogger.recordPdfExport(exportType, date);
+    return res.json({ success: true, record });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: 'Failed to record PDF export log' });
+  }
+});
+
+// Endpoint: Log user-triggered regeneration count in persistent JSON store
+app.post('/api/logs/regeneration', logTrackingRateLimiter, (req, res) => {
+  try {
+    const parsed = validateWithZod(RegenerationLogSchema, req.body || {});
+    if (!parsed.success) {
+      return res.status(400).json({ success: false, error: parsed.error });
+    }
+    const regenType = parsed.data.regenType || parsed.data.type || 'page';
+    const record = usageLogger.recordRegeneration(regenType, parsed.data.date);
+    return res.json({ success: true, record });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: 'Failed to record regeneration log' });
+  }
+});
+
+// Endpoint: Query usage trends from persistent JSON store (Protected: Admin authentication required)
+app.get('/api/admin/usage-trends', requireAdminAuth, (req, res) => {
+  try {
+    const rawDays = req.query.days ? parseInt(req.query.days as string, 10) : 30;
+    const days = isNaN(rawDays) ? 30 : Math.min(365, Math.max(1, rawDays));
+    const trends = usageLogger.getUsageTrends(days);
+    return res.json({ success: true, trends });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: 'Failed to query usage trends' });
+  }
+});
+
+// Endpoint: Read-only usage trends summary for health and monitoring
+app.get('/api/usage-trends', (req, res) => {
+  try {
+    const rawDays = req.query.days ? parseInt(req.query.days as string, 10) : 30;
+    const days = isNaN(rawDays) ? 30 : Math.min(365, Math.max(1, rawDays));
+    const trends = usageLogger.getUsageTrends(days);
+    return res.json({ success: true, trends });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: 'Failed to query usage trends' });
+  }
+});
+
+// Endpoint: Issue signed token of self-attested adult parental consent acknowledgment
+// Note: This records adult consent affirmation and session binding; it is not an independently verified parental consent mechanism under COPPA or GDPR-K.
 app.post('/api/verify-parental-consent', consentRateLimiter, (req, res) => {
   try {
     const validationResult = validateWithZod(VerifyParentalConsentSchema, req.body);
@@ -2211,14 +2651,22 @@ app.post('/api/verify-parental-consent', consentRateLimiter, (req, res) => {
 });
 
 // Endpoint: Convert child or pet photo into personalized coloring book line-art with strict size caps
-app.post('/api/photo-to-line-art', imageRateLimiter, photoToArtSessionQuota, async (req, res) => {
+app.post('/api/photo-to-line-art', (req, res, next) => {
+  if (!isPhotoToLineArtEnabled) {
+    return res.status(404).json({ success: false, error: 'Not found' });
+  }
+  next();
+}, imageRateLimiter, photoToArtSessionQuota, async (req, res) => {
+  if (!isPhotoToLineArtEnabled) {
+    return res.status(404).json({ success: false, error: 'Not found' });
+  }
   try {
     const parsed = validateWithZod(PhotoToLineArtSchema, req.body);
     if (!parsed.success) {
       return res.status(400).json({ success: false, error: parsed.error, issues: parsed.issues });
     }
 
-    // Strict parental consent flow evidence verification (COPPA / GDPR-K)
+    // Check parental consent token acknowledgment
     const consentHeader = (req.headers['x-parental-consent-token'] as string | undefined)?.trim();
     const bodyConsentToken = parsed.data.parentConsentToken?.trim();
 
@@ -2299,7 +2747,7 @@ app.post('/api/photo-to-line-art', imageRateLimiter, photoToArtSessionQuota, asy
     if (!tokenSession || !currentSession || tokenSession !== currentSession) {
       return res.status(403).json({
         success: false,
-        error: 'Parental consent verification token was issued to a different session. Please confirm consent again.',
+        error: 'Parental consent token was issued to a different session. Please acknowledge consent again.',
         isConsentRequired: true,
       });
     }
@@ -2393,6 +2841,17 @@ Style directives:
           });
         }
         console.warn('Pro image preview failed for photo-to-art, trying flash image fallback:', primaryErr?.message);
+        const additionalRes = reserveAdditionalAiBudget(budgetReservation.reservationId, estimatedPhotoCost);
+        if (!additionalRes.allowed) {
+          console.warn('Insufficient budget for photo-to-art fallback attempt:', additionalRes.reason);
+          commitAiBudget(budgetReservation.reservationId, estimatedPhotoCost * providerAttempts);
+          reservationHandled = true;
+          return res.status(429).json({
+            success: false,
+            error: additionalRes.reason || 'Daily AI usage budget reached. Fallback model could not be scheduled.',
+            budgetExceeded: true,
+          });
+        }
         providerAttempts += 1;
         response = await ai.models.generateContent({
           model: 'gemini-3.1-flash-lite-image',
@@ -2656,11 +3115,18 @@ app.post('/api/chat/clear', (req, res) => {
   return res.json({ success: true, cleared: true, sessionKey });
 });
 
-// Start server with Vite middleware in development or static files in production
-async function startServer() {
-  if (process.env.NODE_ENV !== 'production') {
+// Start server with Vite middleware in development or static files outside development
+export async function startServer(port = PORT) {
+  // Startup check: Loud warning if budget/quota stores are file-based and not configured as single-instance
+  checkSingleInstanceDeployment();
+
+  if (isProduction && !process.env.CONSENT_SECRET) {
+    throw new Error('FATAL: CONSENT_SECRET environment variable is required outside development.');
+  }
+
+  if (!isProduction) {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: { middlewareMode: true, allowedHosts: true },
       appType: 'spa',
     });
     app.use(vite.middlewares);
@@ -2672,11 +3138,22 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Coloring Book Generator server running on http://0.0.0.0:${PORT}`);
+  return app.listen(port, '0.0.0.0', () => {
+    console.log(`Coloring Book Generator server running on http://0.0.0.0:${port}`);
   });
 }
 
 if (process.env.NODE_ENV !== 'test' && !process.argv.some((arg) => arg.includes('.test.'))) {
   startServer();
 }
+
+export {
+  app,
+  usageLogger,
+  recordPdfExport,
+  recordRegeneration,
+  getDailyUsage,
+  getUsageTrends,
+  getUsageLogData,
+  PersistentUsageLogger,
+};

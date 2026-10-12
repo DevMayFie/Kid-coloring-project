@@ -147,11 +147,11 @@ export function PersonalizedHeroModal({
     const isNameMatching =
       recordedConsent?.childName?.trim().toLowerCase() === currentHeroName.trim().toLowerCase();
 
-    // STRICT COPPA COMPLIANCE:
+    // PARENTAL CONSENT GATE:
     // Require explicit consent flow for this specific child.
     // NEVER silently issue a new consent token for a different child.
     if (!token || !isNameMatching) {
-      setErrorMsg(`Explicit parental consent must be recorded for "${currentHeroName}" before processing photos.`);
+      setErrorMsg(`Explicit parental consent must be acknowledged for "${currentHeroName}" before processing photos.`);
       setShowConsentModal(true);
       return;
     }
@@ -324,9 +324,9 @@ export function PersonalizedHeroModal({
                   <div className="flex items-start gap-2">
                     <ShieldCheck className="w-4 h-4 text-emerald-700 shrink-0 mt-0.5" />
                     <div>
-                      <h5 className="text-xs font-bold text-emerald-950">Parental Consent Recorded for &quot;{cleanHeroName}&quot;</h5>
+                      <h5 className="text-xs font-bold text-emerald-950">Parental Consent Acknowledged for &quot;{cleanHeroName}&quot;</h5>
                       <p className="text-[11px] text-emerald-900 leading-relaxed mt-0.5">
-                        Explicit parental consent flow is recorded for this child and session under COPPA guidelines.
+                        Self-attested parental consent has been acknowledged for this child and session.
                       </p>
                     </div>
                   </div>
@@ -345,9 +345,9 @@ export function PersonalizedHeroModal({
                   <div className="flex items-start gap-2">
                     <ShieldAlert className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
                     <div>
-                      <h5 className="text-xs font-bold text-amber-950">Explicit Parental Consent Required for &quot;{cleanHeroName}&quot;</h5>
+                      <h5 className="text-xs font-bold text-amber-950">Parental Consent Required for &quot;{cleanHeroName}&quot;</h5>
                       <p className="text-[11px] text-amber-900 leading-relaxed mt-0.5">
-                        COPPA policy requires explicit consent recorded separately for each child before processing photos.
+                        Parental consent must be acknowledged separately for each child before processing photos.
                       </p>
                     </div>
                   </div>
@@ -356,11 +356,20 @@ export function PersonalizedHeroModal({
                     onClick={() => setShowConsentModal(true)}
                     className="px-2.5 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-[11px] font-bold shadow-2xs shrink-0 cursor-pointer transition-colors"
                   >
-                    Record Consent
+                    Acknowledge Consent
                   </button>
                 </div>
               </div>
             )}
+
+            {/* Third-Party Processor Disclosure Notice */}
+            <div className="mb-3 px-3 py-2 bg-blue-50/70 border border-blue-200 rounded-xl text-left">
+              <p className="text-[11px] text-blue-950 leading-relaxed">
+                <strong>Third-Party Processor Notice:</strong> Photos uploaded here are sent to{' '}
+                <strong>Google LLC</strong> via the <strong>Google Gemini API</strong> to generate
+                coloring page outlines. Data is retained by Google for <strong>up to 55 days</strong>.
+              </p>
+            </div>
 
             <input
               type="file"

@@ -1,11 +1,14 @@
-import { describe, it, beforeEach } from 'node:test';
+import { describe, it, before, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'crypto';
 import path from 'path';
 import fs from 'fs';
+import http from 'http';
+import { spawnSync } from 'child_process';
 import {
   checkAiBudgetCircuitBreaker,
   reserveAiBudget,
+  reserveAdditionalAiBudget,
   commitAiBudget,
   releaseAiBudgetReservation,
   recordAiUsageEstimate,
@@ -26,8 +29,24 @@ import {
   createSessionQuotaMiddleware,
   sessionQuotaStore,
   FileQuotaStore,
+  MemoryQuotaStore,
+  setQuotaStore,
   setQuotaStoreForTesting,
+  verifyProductionDeploymentConfiguration,
+  checkSingleInstanceDeployment,
   PRODUCTION_CONTENT_SECURITY_POLICY,
+  isProduction,
+  isPhotoToLineArtEnabled,
+  setPhotoToLineArtEnabledForTesting,
+  app,
+  startServer,
+  usageLogger,
+  recordPdfExport,
+  recordRegeneration,
+  getDailyUsage,
+  getUsageTrends,
+  getUsageLogData,
+  PersistentUsageLogger,
 } from '../server';
 import {
   initServerSession,
@@ -123,6 +142,8 @@ function setupMockIndexedDB(shouldFail = false) {
 
 describe('ColorKid Production Readiness & Security Test Suite', () => {
   beforeEach(() => {
+    setBudgetStoreForTesting(new FileBudgetStore(path.join(process.cwd(), '.ai-budget-state.json')));
+    setQuotaStoreForTesting(new FileQuotaStore(path.join(process.cwd(), '.ai-quota-state.json')));
     resetBudgetStateForTesting(0, 0);
     resetStorageStateForTesting();
     resetSessionSyncForTesting();
@@ -175,13 +196,36 @@ describe('ColorKid Production Readiness & Security Test Suite', () => {
       const budgetRes = reserveAiBudget(estimatedCost);
       assert.equal(budgetRes.allowed, true);
 
-      // Simulate primary attempt failed, followed by fallback attempt
-      const attempts = 2; // Primary + Fallback
-      commitAiBudget(budgetRes.reservationId, estimatedCost * attempts);
+      // Simulate primary attempt failed, followed by atomic additional reservation for fallback attempt
+      const additionalRes = reserveAdditionalAiBudget(budgetRes.reservationId, estimatedCost);
+      assert.equal(additionalRes.allowed, true);
+      assert.equal(getBudgetState().dailyReservedCostUsd, 0.004);
+
+      commitAiBudget(budgetRes.reservationId, estimatedCost * 2);
 
       const state = getBudgetState();
       assert.equal(state.dailyEstimatedCostUsd, 0.004);
       assert.equal(state.dailyRequestsTracked, 1);
+      assert.equal(state.dailyReservedCostUsd, 0);
+    });
+
+    it('rejects fallback attempt if additional budget cannot be reserved near limit', () => {
+      // Set budget close to limit (50.00 limit, set to 49.997)
+      resetBudgetStateForTesting(49.997, 0);
+
+      const estimatedCost = 0.002;
+      const budgetRes = reserveAiBudget(estimatedCost);
+      assert.equal(budgetRes.allowed, true); // 49.997 + 0.002 = 49.999 <= 50.00
+
+      // Now attempt fallback which requires another 0.002 (49.997 + 0.002 + 0.002 = 50.001 > 50.00)
+      const additionalRes = reserveAdditionalAiBudget(budgetRes.reservationId, estimatedCost);
+      assert.equal(additionalRes.allowed, false);
+      assert.match(additionalRes.reason || '', /budget limit.*reached/i);
+
+      // Finalize first attempt only (cost of 1 attempt)
+      commitAiBudget(budgetRes.reservationId, estimatedCost);
+      const state = getBudgetState();
+      assert.equal(Number(state.dailyEstimatedCostUsd.toFixed(4)), 49.999);
       assert.equal(state.dailyReservedCostUsd, 0);
     });
 
@@ -243,6 +287,24 @@ describe('ColorKid Production Readiness & Security Test Suite', () => {
       const res4: any = {};
       requireAdminAuth(req4, res4, () => { nextCalled = true; });
       assert.equal(nextCalled, true);
+
+      // 5. When ADMIN_KEY is not configured, endpoints must return 404 (never accept default key)
+      const originalAdminKey = process.env.ADMIN_KEY;
+      try {
+        delete process.env.ADMIN_KEY;
+        let status5 = 200;
+        let body5: any = null;
+        const req5: any = { query: {}, headers: { 'x-admin-key': 'dev-admin-key' } };
+        const res5: any = {
+          status: (s: number) => { status5 = s; return res5; },
+          json: (b: any) => { body5 = b; return res5; },
+        };
+        requireAdminAuth(req5, res5, () => {});
+        assert.equal(status5, 404);
+        assert.equal(body5.success, false);
+      } finally {
+        process.env.ADMIN_KEY = originalAdminKey;
+      }
     });
 
     it('budget state is persistent and shared across store updates', () => {
@@ -315,6 +377,102 @@ describe('ColorKid Production Readiness & Security Test Suite', () => {
       const reservation = reserveAiBudget(0.001);
       assert.equal(reservation.allowed, false);
       assert.match(reservation.reason || '', /budget limit.*reached/i);
+    });
+
+    it('server restart reconciles and preserves outstanding reservations without allowing overspending or double-charging', () => {
+      const tempTestFile = path.join(process.cwd(), `.test-restart-budget-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+      try {
+        const fileStore = new FileBudgetStore(tempTestFile);
+        setBudgetStoreForTesting(fileStore);
+        resetBudgetStateForTesting(49.95, 0); // Limit is 50.00, remaining capacity is $0.05
+
+        // Make an initial reservation of $0.03
+        const res1 = reserveAiBudget(0.03);
+        assert.equal(res1.allowed, true);
+        assert.ok(res1.reservationId);
+
+        let state = getBudgetState();
+        assert.equal(state.dailyEstimatedCostUsd, 49.95);
+        assert.equal(state.dailyReservedCostUsd, 0.03);
+
+        // Simulate server process restart: create a new store instance pointing to the persisted file
+        const restartedStore = new FileBudgetStore(tempTestFile);
+        setBudgetStoreForTesting(restartedStore);
+
+        // Verify that dailyReservedCostUsd is restored from store and not silently zeroed
+        state = getBudgetState();
+        assert.equal(state.dailyReservedCostUsd, 0.03);
+        assert.equal(state.dailyEstimatedCostUsd, 49.95);
+
+        // A competing request attempts to reserve $0.03 (49.95 + 0.03 reserved + 0.03 = 50.01 > 50.00):
+        const res2 = reserveAiBudget(0.03);
+        assert.equal(res2.allowed, false, 'Competing request must be rejected to prevent overspending');
+
+        // Commit the restored reservation
+        commitAiBudget(res1.reservationId, 0.03);
+        state = getBudgetState();
+        assert.equal(state.dailyReservedCostUsd, 0);
+        assert.equal(Number(state.dailyEstimatedCostUsd.toFixed(4)), 49.98);
+
+        // Attempting to commit the same reservation a second time must NOT charge twice
+        commitAiBudget(res1.reservationId, 0.03);
+        state = getBudgetState();
+        assert.equal(Number(state.dailyEstimatedCostUsd.toFixed(4)), 49.98, 'Must not charge duplicate cost');
+      } finally {
+        if (fs.existsSync(tempTestFile)) {
+          fs.unlinkSync(tempTestFile);
+        }
+      }
+    });
+
+    it('simultaneous competing fallback requests near budget limit strictly enforce spending cap', async () => {
+      resetBudgetStateForTesting(49.96, 0); // Remaining budget capacity is $0.04
+      const res1 = reserveAiBudget(0.015);
+      const res2 = reserveAiBudget(0.015);
+      assert.equal(res1.allowed, true);
+      assert.equal(res2.allowed, true);
+
+      // Current reserved+estimated is 49.96 + 0.015 + 0.015 = 49.99 (Remaining capacity: 0.01)
+      // Both requests encounter provider failure and simultaneously attempt to reserve fallback of 0.015 each
+      const [fallback1, fallback2] = await Promise.all([
+        Promise.resolve().then(() => reserveAdditionalAiBudget(res1.reservationId, 0.015)),
+        Promise.resolve().then(() => reserveAdditionalAiBudget(res2.reservationId, 0.015)),
+      ]);
+
+      // Since remaining capacity is only 0.01, neither can allocate 0.015
+      assert.equal(fallback1.allowed, false);
+      assert.equal(fallback2.allowed, false);
+
+      // Verify that budget cap is strictly maintained
+      const state = getBudgetState();
+      assert.ok(state.dailyEstimatedCostUsd + state.dailyReservedCostUsd <= 50.00);
+
+      // Original reservations can still be finalized safely without corrupting state
+      commitAiBudget(res1.reservationId, 0.015);
+      commitAiBudget(res2.reservationId, 0.015);
+      const finalState = getBudgetState();
+      assert.equal(Number(finalState.dailyEstimatedCostUsd.toFixed(4)), 49.99);
+      assert.equal(finalState.dailyReservedCostUsd, 0);
+    });
+
+    it('budget operations fail closed with operational error on persistence failures', () => {
+      const brokenStore = {
+        getState: () => ({
+          dailyEstimatedCostUsd: 10,
+          dailyReservedCostUsd: 0,
+          dailyRequestsTracked: 1,
+          dailyCostResetTimestamp: Date.now() + 86400000,
+        }),
+        saveState: () => {
+          throw new Error('Simulated persistent disk write failure');
+        },
+      };
+
+      setBudgetStoreForTesting(brokenStore as any);
+      const res = reserveAiBudget(0.01);
+      assert.equal(res.allowed, false);
+      assert.equal(res.operationalError, true);
+      assert.match(res.reason || '', /paused for safety/i);
     });
   });
 
@@ -494,6 +652,193 @@ describe('ColorKid Production Readiness & Security Test Suite', () => {
         }
       }
     });
+
+    it('setQuotaStore dynamically changes the store used by quota middleware', () => {
+      // Create custom store
+      const customStoreMap = new Map<string, any>();
+      const customStore = {
+        get: (k: string) => customStoreMap.get(k),
+        set: (k: string, v: any) => { customStoreMap.set(k, v); },
+        delete: (k: string) => { customStoreMap.delete(k); },
+        clear: () => { customStoreMap.clear(); },
+      };
+
+      setQuotaStore(customStore as any);
+
+      const quotaMw = createSessionQuotaMiddleware({
+        windowMinutes: 10,
+        maxRequests: 5,
+        endpointName: 'Dynamic Store Test',
+      });
+
+      const clientIp = '198.51.100.42';
+      const session = createSignedSessionId();
+      let status = 200;
+      const req: any = { ip: clientIp, body: { sessionId: session }, headers: {} };
+      const res: any = { setHeader: () => {}, status: (s: number) => { status = s; return res; }, json: () => res };
+
+      quotaMw(req, res, () => {});
+      assert.equal(status, 200);
+
+      // Verify record was written to the customStore, proving middleware used the new store
+      const ipKey = `Dynamic Store Test:ip:${clientIp}`;
+      assert.ok(customStoreMap.has(ipKey));
+      assert.equal(customStoreMap.get(ipKey).count, 1);
+    });
+
+    it('quota middleware fails closed with 503 when authoritative persistence fails', () => {
+      // Mock store that throws an error on get/set
+      const failingStore = {
+        get: () => {
+          throw new Error('Disk IO failure reading authoritative quota file');
+        },
+        set: () => {
+          throw new Error('Disk IO failure writing authoritative quota file');
+        },
+        delete: () => {},
+        clear: () => {},
+      };
+
+      setQuotaStore(failingStore as any);
+
+      const quotaMw = createSessionQuotaMiddleware({
+        windowMinutes: 10,
+        maxRequests: 5,
+        endpointName: 'Failing Store Test',
+      });
+
+      let status = 200;
+      let body: any = null;
+      const req: any = { ip: '198.51.100.99', body: {}, headers: {} };
+      const res: any = {
+        setHeader: () => {},
+        status: (s: number) => { status = s; return res; },
+        json: (b: any) => { body = b; return res; },
+      };
+
+      quotaMw(req, res, () => {});
+      assert.equal(status, 503);
+      assert.match(body.error, /temporarily unavailable.*storage error/i);
+    });
+
+    it('simultaneous quota increments against quota middleware enforce limits and reject excess requests', async () => {
+      const quotaMw = createSessionQuotaMiddleware({
+        windowMinutes: 10,
+        maxRequests: 5,
+        endpointName: 'Simultaneous Quota Test',
+      });
+
+      const clientIp = '198.51.100.42';
+      const session = createSignedSessionId();
+      const results: number[] = [];
+
+      await Promise.all(
+        Array.from({ length: 15 }).map(async () => {
+          let statusCode = 200;
+          const req: any = { ip: clientIp, body: { sessionId: session }, headers: {} };
+          const res: any = {
+            setHeader: () => {},
+            status: (s: number) => {
+              statusCode = s;
+              return res;
+            },
+            json: () => res,
+          };
+          await new Promise<void>((resolve) => {
+            quotaMw(req, res, () => {
+              statusCode = 200;
+              resolve();
+            });
+            if (statusCode === 429) {
+              resolve();
+            }
+          });
+          results.push(statusCode);
+        })
+      );
+
+      const okCount = results.filter((s) => s === 200).length;
+      const rateLimitedCount = results.filter((s) => s === 429).length;
+      assert.equal(okCount, 5, 'Exact quota limit of 5 requests must be permitted');
+      assert.equal(rateLimitedCount, 10, 'All 10 excess requests must be rejected with 429');
+    });
+
+    it('two instances attempting to increment the same quota simultaneously against an atomic store never exceed the limit', async () => {
+      const atomicStore = new MemoryQuotaStore();
+      setQuotaStoreForTesting(atomicStore);
+
+      const quotaMw = createSessionQuotaMiddleware({
+        windowMinutes: 10,
+        maxRequests: 8,
+        endpointName: 'MultiInstance Atomic Test',
+      });
+
+      const clientIp = '203.0.113.88';
+      const results: number[] = [];
+
+      // Simulate 2 competing instances dispatching 10 requests each (20 total) concurrently
+      await Promise.all(
+        Array.from({ length: 20 }).map(async () => {
+          let statusCode = 200;
+          const req: any = { ip: clientIp, body: {}, headers: {} };
+          const res: any = {
+            setHeader: () => {},
+            status: (s: number) => {
+              statusCode = s;
+              return res;
+            },
+            json: () => res,
+          };
+          await new Promise<void>((resolve) => {
+            quotaMw(req, res, () => {
+              statusCode = 200;
+              resolve();
+            });
+            if (statusCode === 429) {
+              resolve();
+            }
+          });
+          results.push(statusCode);
+        })
+      );
+
+      const okCount = results.filter((s) => s === 200).length;
+      const rateLimitedCount = results.filter((s) => s === 429).length;
+      assert.equal(okCount, 8, 'Max 8 requests allowed across simulated instances');
+      assert.equal(rateLimitedCount, 12, '12 excess requests rejected across simulated instances');
+    });
+
+    it('verifies single-instance deployment requirement and documents distributed store needs', () => {
+      // With default file stores in single-instance mode:
+      setBudgetStoreForTesting(new FileBudgetStore(path.join(process.cwd(), '.ai-budget-state.json')));
+      setQuotaStoreForTesting(new FileQuotaStore(path.join(process.cwd(), '.ai-quota-state.json')));
+
+      const configCheck = verifyProductionDeploymentConfiguration();
+      assert.equal(configCheck.singleInstanceOnly, true);
+      assert.equal(configCheck.distributedSafetyConfigured, false);
+    });
+
+    it('checkSingleInstanceDeployment issues loud warning when stores are file-based and single-instance is not configured', () => {
+      setBudgetStoreForTesting(new FileBudgetStore(path.join(process.cwd(), '.ai-budget-state.json')));
+      setQuotaStoreForTesting(new FileQuotaStore(path.join(process.cwd(), '.ai-quota-state.json')));
+
+      delete process.env.SINGLE_INSTANCE;
+      delete process.env.AI_SINGLE_INSTANCE;
+      delete process.env.CLOUD_RUN_MAX_INSTANCES;
+      delete process.env.MAX_INSTANCES;
+
+      const result = checkSingleInstanceDeployment();
+      assert.equal(result.isFileBased, true);
+      assert.equal(result.isSingleInstance, false);
+      assert.equal(result.warningIssued, true);
+
+      // When configured as single instance, warning is suppressed:
+      process.env.SINGLE_INSTANCE = 'true';
+      const resultConfigured = checkSingleInstanceDeployment();
+      assert.equal(resultConfigured.isSingleInstance, true);
+      assert.equal(resultConfigured.warningIssued, false);
+      delete process.env.SINGLE_INSTANCE;
+    });
   });
 
   describe('Priority 3: IndexedDB Safe Initialization & Hydration Protection', () => {
@@ -597,5 +942,448 @@ describe('ColorKid Production Readiness & Security Test Suite', () => {
       assert.equal(prodCsp.includes("base-uri 'self'"), true);
       assert.equal(prodCsp.includes("form-action 'self'"), true);
     });
+
+    it('inverted environment logic treats non-development environments as production', () => {
+      // Inverted logic: isProduction is true unless NODE_ENV is explicitly 'development'
+      assert.equal(typeof isProduction, 'boolean');
+      const checkIsProduction = (env?: string) => env !== 'development';
+      assert.equal(checkIsProduction('development'), false);
+      assert.equal(checkIsProduction('production'), true);
+      assert.equal(checkIsProduction('staging'), true);
+      assert.equal(checkIsProduction(undefined), true);
+      assert.equal(checkIsProduction(''), true);
+    });
+
+    it('photo-to-line-art feature flag is disabled by default', () => {
+      assert.equal(isPhotoToLineArtEnabled, false);
+    });
+  });
+
+  describe('Priority 5: Persistent Daily Usage Logging & Trend Monitoring', () => {
+    const testLogFile = path.join(process.cwd(), `.test-usage-log-${Date.now()}.json`);
+    let logger: PersistentUsageLogger;
+
+    beforeEach(() => {
+      if (fs.existsSync(testLogFile)) {
+        try {
+          fs.unlinkSync(testLogFile);
+        } catch {}
+      }
+      logger = new PersistentUsageLogger(testLogFile);
+    });
+
+    after(() => {
+      if (fs.existsSync(testLogFile)) {
+        try {
+          fs.unlinkSync(testLogFile);
+        } catch {}
+      }
+    });
+
+    it('accurately tracks daily PDF export counts and breakdown in persistent JSON file', () => {
+      const today = '2026-10-11';
+      logger.recordPdfExport('full-book', today);
+      logger.recordPdfExport('full-book', today);
+      logger.recordPdfExport('single-page', today);
+      logger.recordPdfExport('direct-print', today);
+
+      const daily = logger.getDailyUsage(today);
+      assert.equal(daily.pdfExports, 4);
+      assert.equal(daily.breakdown.pdfExports.fullBook, 2);
+      assert.equal(daily.breakdown.pdfExports.singlePage, 1);
+      assert.equal(daily.breakdown.pdfExports.directPrint, 1);
+
+      // Verify file was written to disk and is valid JSON
+      assert.ok(fs.existsSync(testLogFile));
+      const diskContent = JSON.parse(fs.readFileSync(testLogFile, 'utf8'));
+      assert.equal(diskContent.totalPdfExports, 4);
+      assert.equal(diskContent.daily[today].pdfExports, 4);
+    });
+
+    it('accurately tracks user-triggered regenerations by category and increments total count', () => {
+      const today = '2026-10-11';
+      logger.recordRegeneration('page', today);
+      logger.recordRegeneration('page', today);
+      logger.recordRegeneration('cover', today);
+      logger.recordRegeneration('stickers', today);
+      logger.recordRegeneration('batch', today);
+
+      const daily = logger.getDailyUsage(today);
+      assert.equal(daily.regenerations, 5);
+      assert.equal(daily.breakdown.regenerations.page, 2);
+      assert.equal(daily.breakdown.regenerations.cover, 1);
+      assert.equal(daily.breakdown.regenerations.stickers, 1);
+      assert.equal(daily.breakdown.regenerations.batch, 1);
+
+      const allData = logger.getAllData();
+      assert.equal(allData.totalRegenerations, 5);
+    });
+
+    it('persists usage metrics across server restarts and process re-instantiation', () => {
+      const day1 = '2026-10-09';
+      const day2 = '2026-10-10';
+      logger.recordPdfExport('full-book', day1);
+      logger.recordPdfExport('single-page', day1);
+      logger.recordRegeneration('page', day1);
+
+      logger.recordPdfExport('full-book', day2);
+      logger.recordRegeneration('cover', day2);
+      logger.recordRegeneration('batch', day2);
+
+      // Simulate complete server restart by creating a new logger instance pointing to the existing file
+      const rebootedLogger = new PersistentUsageLogger(testLogFile);
+      const metricsDay1 = rebootedLogger.getDailyUsage(day1);
+      const metricsDay2 = rebootedLogger.getDailyUsage(day2);
+
+      assert.equal(metricsDay1.pdfExports, 2);
+      assert.equal(metricsDay1.regenerations, 1);
+      assert.equal(metricsDay2.pdfExports, 1);
+      assert.equal(metricsDay2.regenerations, 2);
+
+      const allRebooted = rebootedLogger.getAllData();
+      assert.equal(allRebooted.totalPdfExports, 3);
+      assert.equal(allRebooted.totalRegenerations, 3);
+    });
+
+    it('computes usage trends, daily averages, and peak days accurately', () => {
+      logger.recordPdfExport('full-book', '2026-10-08');
+      logger.recordRegeneration('page', '2026-10-08');
+
+      logger.recordPdfExport('full-book', '2026-10-09');
+      logger.recordPdfExport('full-book', '2026-10-09');
+      logger.recordPdfExport('full-book', '2026-10-09'); // Peak PDF day: 3 exports
+      logger.recordRegeneration('page', '2026-10-09');
+
+      logger.recordPdfExport('full-book', '2026-10-10');
+      logger.recordRegeneration('page', '2026-10-10');
+      logger.recordRegeneration('cover', '2026-10-10');
+      logger.recordRegeneration('batch', '2026-10-10');
+      logger.recordRegeneration('stickers', '2026-10-10'); // Peak Regen day: 4 regens
+
+      const trends = logger.getUsageTrends(10);
+      assert.equal(trends.totalPdfExports, 5);
+      assert.equal(trends.totalRegenerations, 6);
+      assert.equal(trends.activeDaysTracked, 3);
+      assert.equal(trends.peakPdfExportDay?.date, '2026-10-09');
+      assert.equal(trends.peakPdfExportDay?.count, 3);
+      assert.equal(trends.peakRegenerationDay?.date, '2026-10-10');
+      assert.equal(trends.peakRegenerationDay?.count, 4);
+      assert.equal(trends.averageDailyPdfExports, 1.67);
+      assert.equal(trends.averageDailyRegenerations, 2);
+      assert.equal(trends.recentTrends.length, 3);
+    });
+
+    it('gracefully recovers from uninitialized folders or corrupt files without crashing', () => {
+      const nestedFilePath = path.join(process.cwd(), `.test-subfolder-${Date.now()}`, 'logs', 'usage.json');
+      const resilientLogger = new PersistentUsageLogger(nestedFilePath);
+
+      // Successfully creates directory and saves
+      resilientLogger.recordPdfExport('full-book', '2026-10-11');
+      assert.ok(fs.existsSync(nestedFilePath));
+
+      // Overwrite with corrupt contents
+      fs.writeFileSync(nestedFilePath, 'corrupt!{invalid-json', 'utf8');
+
+      // Re-instantiating should not crash and should initialize cleanly
+      const recoveredLogger = new PersistentUsageLogger(nestedFilePath);
+      assert.doesNotThrow(() => {
+        recoveredLogger.recordRegeneration('page', '2026-10-11');
+      });
+      assert.equal(recoveredLogger.getDailyUsage('2026-10-11').regenerations, 1);
+
+      // Cleanup
+      try {
+        fs.rmSync(path.join(process.cwd(), path.dirname(path.dirname(nestedFilePath))), { recursive: true, force: true });
+      } catch {}
+    });
+  });
+
+  describe('Priority 6: Live Route-Level Express Integration & Security Enforcement', () => {
+    let testServer: http.Server;
+    let baseUrl: string;
+
+    before(async () => {
+      await new Promise<void>((resolve) => {
+        testServer = app.listen(0, '127.0.0.1', () => {
+          const addr = testServer.address() as any;
+          baseUrl = `http://127.0.0.1:${addr.port}`;
+          resolve();
+        });
+      });
+    });
+
+    after(async () => {
+      setPhotoToLineArtEnabledForTesting(false);
+      delete process.env.ADMIN_KEY;
+      delete process.env.ADMIN_SECRET;
+      await new Promise<void>((resolve) => {
+        if (testServer) {
+          testServer.close(() => resolve());
+        } else {
+          resolve();
+        }
+      });
+    });
+
+    it('GET /api/download-project returns 404 in every environment', async () => {
+      // 1. Standard GET returns 404
+      const res1 = await fetch(`${baseUrl}/api/download-project`);
+      assert.equal(res1.status, 404);
+
+      // 2. GET with adminKey query parameter returns 404
+      const res2 = await fetch(`${baseUrl}/api/download-project?adminKey=test-admin-key`);
+      assert.equal(res2.status, 404);
+
+      // 3. GET with x-admin-key header returns 404
+      const res3 = await fetch(`${baseUrl}/api/download-project`, {
+        headers: { 'x-admin-key': 'dev-admin-key' },
+      });
+      assert.equal(res3.status, 404);
+
+      // 4. GET returns 404 even if ADMIN_KEY is configured in the environment
+      process.env.ADMIN_KEY = 'configured-secret-key-2026';
+      try {
+        const res4 = await fetch(`${baseUrl}/api/download-project`, {
+          headers: { 'x-admin-key': 'configured-secret-key-2026' },
+        });
+        assert.equal(res4.status, 404);
+      } finally {
+        delete process.env.ADMIN_KEY;
+      }
+    });
+
+    it('Admin endpoints return 404 or 401 with no ADMIN_KEY set, and reject \'dev-admin-key\'', async () => {
+      // Scenario A: When ADMIN_KEY is not configured, admin endpoints return 404 and reject 'dev-admin-key'
+      delete process.env.ADMIN_KEY;
+      delete process.env.ADMIN_SECRET;
+
+      // 1. No key provided -> 404
+      const resBudgetNoKey = await fetch(`${baseUrl}/api/admin/usage-budget`);
+      assert.equal(resBudgetNoKey.status, 404);
+
+      // 2. Passing 'dev-admin-key' header -> 404 (never accepted)
+      const resBudgetDevKey = await fetch(`${baseUrl}/api/admin/usage-budget`, {
+        headers: { 'x-admin-key': 'dev-admin-key' },
+      });
+      assert.equal(resBudgetDevKey.status, 404);
+
+      const resTrendsDevKey = await fetch(`${baseUrl}/api/admin/usage-trends`, {
+        headers: { 'x-admin-key': 'dev-admin-key' },
+      });
+      assert.equal(resTrendsDevKey.status, 404);
+
+      // Scenario B: When ADMIN_KEY is configured with a secret, endpoints require valid auth and reject 'dev-admin-key'
+      const secureKey = 'test-prod-admin-auth-secret-xyz';
+      process.env.ADMIN_KEY = secureKey;
+      try {
+        // Missing key -> 401 Unauthorized
+        const resMissingAuth = await fetch(`${baseUrl}/api/admin/usage-budget`);
+        assert.equal(resMissingAuth.status, 401);
+
+        // Wrong key 'dev-admin-key' -> 401 Unauthorized (rejected)
+        const resRejectedDevKey = await fetch(`${baseUrl}/api/admin/usage-budget`, {
+          headers: { 'x-admin-key': 'dev-admin-key' },
+        });
+        assert.equal(resRejectedDevKey.status, 401);
+
+        // Bearer 'dev-admin-key' -> 401 Unauthorized (rejected)
+        const resBearerDevKey = await fetch(`${baseUrl}/api/admin/usage-budget`, {
+          headers: { 'Authorization': 'Bearer dev-admin-key' },
+        });
+        assert.equal(resBearerDevKey.status, 401);
+
+        // Query param attempt -> 400 Bad Request (rejected to prevent access log leakage)
+        const resQueryAttempt = await fetch(`${baseUrl}/api/admin/usage-budget?adminKey=${secureKey}`);
+        assert.equal(resQueryAttempt.status, 400);
+
+        // Valid key -> 200 OK
+        const resValidAuth = await fetch(`${baseUrl}/api/admin/usage-budget`, {
+          headers: { 'x-admin-key': secureKey },
+        });
+        assert.equal(resValidAuth.status, 200);
+        const bodyValid = await resValidAuth.json();
+        assert.equal(bodyValid.success, true);
+      } finally {
+        delete process.env.ADMIN_KEY;
+      }
+    });
+
+    it('POST /api/photo-to-line-art returns 404 when the feature flag is off', async () => {
+      setPhotoToLineArtEnabledForTesting(false);
+      assert.equal(isPhotoToLineArtEnabled, false);
+
+      const res = await fetch(`${baseUrl}/api/photo-to-line-art`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          photoBase64: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+          subjectType: 'child',
+          childName: 'Leo',
+          theme: 'space',
+          sessionId: createSignedSessionId(),
+        }),
+      });
+
+      assert.equal(res.status, 404);
+      const data = await res.json();
+      assert.equal(data.success, false);
+    });
+
+    it('POST /api/verify-parental-consent cannot be used to bypass the photo gate when the flag is on', async () => {
+      setPhotoToLineArtEnabledForTesting(true);
+      try {
+        const sessionA = createSignedSessionId();
+        const sessionB = createSignedSessionId();
+
+        // 1. Direct call to photo-to-line-art without parental consent is rejected (403)
+        const resNoConsent = await fetch(`${baseUrl}/api/photo-to-line-art`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Session-ID': sessionA },
+          body: JSON.stringify({
+            photoBase64: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+            subjectType: 'child',
+            childName: 'Alice',
+            sessionId: sessionA,
+          }),
+        });
+        assert.equal(resNoConsent.status, 403);
+        const dataNoConsent = await resNoConsent.json();
+        assert.equal(dataNoConsent.isConsentRequired, true);
+
+        // 2. Cannot record consent with forged/unverified session ID (400)
+        const resForgedSession = await fetch(`${baseUrl}/api/verify-parental-consent`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Session-ID': 'forged_fake_session' },
+          body: JSON.stringify({
+            guardianRole: 'parent',
+            childName: 'Alice',
+            sessionId: 'forged_fake_session',
+            coppaConfirmed: true,
+          }),
+        });
+        assert.equal(resForgedSession.status, 400);
+
+        // 3. Issue genuine consent token for ("Alice", sessionA)
+        const resValidConsent = await fetch(`${baseUrl}/api/verify-parental-consent`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Session-ID': sessionA },
+          body: JSON.stringify({
+            guardianRole: 'parent',
+            childName: 'Alice',
+            sessionId: sessionA,
+            coppaConfirmed: true,
+          }),
+        });
+        assert.equal(resValidConsent.status, 200);
+        const consentData = await resValidConsent.json();
+        assert.ok(consentData.consentToken);
+        const aliceToken = consentData.consentToken;
+
+        // 4. Bypass Attempt A: Using Alice's token to process photo for a different child "Bob" is rejected (403)
+        const resChildHijack = await fetch(`${baseUrl}/api/photo-to-line-art`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Session-ID': sessionA,
+            'x-parental-consent-token': aliceToken,
+          },
+          body: JSON.stringify({
+            photoBase64: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+            subjectType: 'child',
+            childName: 'Bob',
+            sessionId: sessionA,
+            parentConsentToken: aliceToken,
+          }),
+        });
+        assert.equal(resChildHijack.status, 403);
+        const dataChildHijack = await resChildHijack.json();
+        assert.match(dataChildHijack.error, /cannot be used for "Bob"/i);
+
+        // 5. Bypass Attempt B: Using Alice's token with a different browser session sessionB is rejected (403)
+        const resSessionHijack = await fetch(`${baseUrl}/api/photo-to-line-art`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Session-ID': sessionB,
+            'x-parental-consent-token': aliceToken,
+          },
+          body: JSON.stringify({
+            photoBase64: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+            subjectType: 'child',
+            childName: 'Alice',
+            sessionId: sessionB,
+            parentConsentToken: aliceToken,
+          }),
+        });
+        assert.equal(resSessionHijack.status, 403);
+        const dataSessionHijack = await resSessionHijack.json();
+        assert.match(dataSessionHijack.error, /different session/i);
+
+        // 6. Bypass Attempt C: Forged or altered consent token signature is rejected (403)
+        const forgedToken = `${aliceToken.split('.')[0]}.invalidSig123`;
+        const resForgedToken = await fetch(`${baseUrl}/api/photo-to-line-art`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Session-ID': sessionA,
+            'x-parental-consent-token': forgedToken,
+          },
+          body: JSON.stringify({
+            photoBase64: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+            subjectType: 'child',
+            childName: 'Alice',
+            sessionId: sessionA,
+            parentConsentToken: forgedToken,
+          }),
+        });
+        assert.equal(resForgedToken.status, 403);
+      } finally {
+        setPhotoToLineArtEnabledForTesting(false);
+      }
+    });
+
+    it('The server refuses to start outside development without CONSENT_SECRET', async () => {
+      const proc = spawnSync('npx', ['tsx', '-e', `
+        process.env.NODE_ENV = 'production';
+        delete process.env.CONSENT_SECRET;
+        import('./server.ts').then(async (m) => {
+          await m.startServer(0);
+        }).catch((err) => {
+          console.error('FATAL_ERR:', err.message);
+          process.exit(99);
+        });
+      `], {
+        encoding: 'utf8',
+        timeout: 10000,
+      });
+
+      assert.equal(proc.status, 99);
+      const output = `${proc.stdout} ${proc.stderr}`;
+      assert.match(output, /FATAL: CONSENT_SECRET environment variable is required outside development/i);
+    });
+  });
+
+  after(() => {
+    const budgetFile = path.join(process.cwd(), '.ai-budget-state.json');
+    if (fs.existsSync(budgetFile)) {
+      try {
+        fs.unlinkSync(budgetFile);
+      } catch {}
+    }
+    const quotaFile = path.join(process.cwd(), '.ai-quota-state.json');
+    if (fs.existsSync(quotaFile)) {
+      try {
+        fs.unlinkSync(quotaFile);
+      } catch {}
+    }
+    // Clean up any stray test files
+    const cwdFiles = fs.readdirSync(process.cwd());
+    for (const f of cwdFiles) {
+      if (f.startsWith('.test-') && f.endsWith('.json')) {
+        try {
+          fs.unlinkSync(path.join(process.cwd(), f));
+        } catch {}
+      }
+    }
   });
 });

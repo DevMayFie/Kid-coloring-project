@@ -93,7 +93,7 @@ export const ParentalConsentModal: React.FC<ParentalConsentModalProps> = ({
       onClose();
     } catch (err: any) {
       console.error('Parental consent recording rejected:', err);
-      // STRICT COPPA SECURITY: Consent is NOT granted when recording fails
+      // Consent is NOT granted when recording fails
       setErrorMessage(
         err.message || 'Consent could not be recorded with the server. Parental consent was not granted. Please try again.'
       );
@@ -150,9 +150,9 @@ export const ParentalConsentModal: React.FC<ParentalConsentModalProps> = ({
             <div className="bg-red-50 border-2 border-red-300 text-red-800 rounded-2xl p-4 text-xs flex items-start gap-3 animate-in fade-in">
               <AlertCircle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
               <div>
-                <p className="font-bold text-sm text-red-900 mb-0.5">Verification Failed</p>
+                <p className="font-bold text-sm text-red-900 mb-0.5">Consent Submission Failed</p>
                 <p>{errorMessage}</p>
-                <p className="mt-1 text-[11px] text-red-700">Consent cannot be granted until server verification succeeds.</p>
+                <p className="mt-1 text-[11px] text-red-700">Consent cannot be recorded until server acknowledgment succeeds.</p>
               </div>
             </div>
           )}
@@ -163,10 +163,7 @@ export const ParentalConsentModal: React.FC<ParentalConsentModalProps> = ({
               <Heart className="w-4 h-4 text-red-500 fill-red-400" />
               Safety-First Family Experience
             </p>
-            ColorCraft is built for children, families, and classrooms. In accordance with the
-            <strong> Children&apos;s Online Privacy Protection Act (COPPA)</strong> and privacy best
-            practices, we require verified parental or guardian consent before processing any child
-            information.
+            ColorCraft is built for children, families, and classrooms. To support child privacy and safety best practices, we ask for self-attested parental or guardian consent before processing any child information.
           </div>
 
           {/* Data Being Submitted Badge */}
@@ -192,7 +189,7 @@ export const ParentalConsentModal: React.FC<ParentalConsentModalProps> = ({
                 </span>
                 <p className="text-[11px] text-gray-500 mt-0.5">
                   {hasPhoto
-                    ? 'Converted into printable line-art coloring page.'
+                    ? "When you upload a photo, the image is sent to Google LLC via the Google Gemini API to create the line drawing. Google stores API input data for up to 55 days."
                     : 'Standard story themes generated with Gemini AI.'}
                 </p>
               </div>
@@ -276,12 +273,13 @@ export const ParentalConsentModal: React.FC<ParentalConsentModalProps> = ({
                 <span className="font-bold text-gray-950 block mb-0.5">
                   Adult Consent Affirmation (Required):
                 </span>
-                I confirm that I am at least 18 years of age and the parent, legal guardian, or
-                authorized adult for this child. I explicitly give my consent to process the
-                child&apos;s name and/or photo solely to create these personalized coloring pages and
-                save them to this device&apos;s storage.
+                I confirm that I am at least 18 years old and the parent, legal guardian, or
+                authorized adult for this child. I understand that uploaded photos are sent to{' '}
+                <strong>Google LLC</strong> via the <strong>Google Gemini API</strong> (retained for{' '}
+                <strong>up to 55 days</strong>) to create line drawings, and I give consent to
+                process the child&apos;s name and photo for this purpose.
                 <span className="block mt-1 text-[11px] text-gray-500 font-normal">
-                  Note: This acknowledgment records an adult consent affirmation for this session and child under COPPA guidelines; it does not constitute independent government or physical identity verification.
+                  Note: This is a self-attested adult consent acknowledgment for this session and child; it is not an independently verified parental consent mechanism under COPPA or GDPR-K.
                 </span>
               </div>
             </label>
@@ -299,15 +297,18 @@ export const ParentalConsentModal: React.FC<ParentalConsentModalProps> = ({
             {showFullTerms && (
               <div className="mt-3 p-3 bg-gray-50 rounded-xl text-[11px] text-gray-600 text-left space-y-2 border border-gray-200">
                 <p>
-                  <strong>COPPA Compliance:</strong> ColorCraft does not require children to create
+                  <strong>Privacy Design:</strong> ColorCraft does not require children to create
                   accounts, enter personal email addresses, or disclose personal identifiers. All
                   personalization is driven by adult users and saved client-side in persistent
                   IndexedDB.
                 </p>
                 <p>
-                  <strong>Photo Line-Art Processing:</strong> When photos are converted to coloring
-                  pages, image processing extracts high-contrast line drawings. Photos are never
-                  re-used for advertising or marketing.
+                  <strong>Third-Party AI Photo Processing:</strong> When you convert a child or pet
+                  photo into a coloring page, the image is sent to our third-party processor,{' '}
+                  <strong>Google LLC</strong>, using the <strong>Google Gemini API</strong> (
+                  <code>generateContent</code>). Google processes the image to extract high-contrast
+                  line drawings. Google retains this data for <strong>up to 55 days</strong>.{' '}
+                  Photos are never sold or used for advertising.
                 </p>
               </div>
             )}
