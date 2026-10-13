@@ -71,6 +71,9 @@ interface BookFormProps {
     aspectRatio: AspectRatio;
     userNotes?: string;
   }) => Promise<void>;
+  onOpenTemplates?: () => void;
+  onOpenCommunityGallery?: () => void;
+  onOpenBookShare?: () => void;
 }
 
 export const BookForm: React.FC<BookFormProps> = ({
@@ -86,6 +89,9 @@ export const BookForm: React.FC<BookFormProps> = ({
   initialAspectRatio,
   isGenerating,
   onGenerateBook,
+  onOpenTemplates,
+  onOpenCommunityGallery,
+  onOpenBookShare,
 }) => {
   const [theme, setTheme] = useState(initialTheme);
   const [childName, setChildName] = useState(initialChildName);
@@ -279,10 +285,28 @@ export const BookForm: React.FC<BookFormProps> = ({
               Personalized {pageCount}-page story adventure with custom cover, coloring suggestions, fun facts & thick black outlines.
             </p>
           </div>
-          <span className="inline-flex items-center gap-1.5 self-start sm:self-auto px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-800 text-xs font-semibold border border-emerald-200">
-            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-            Ready to Print & Color
-          </span>
+          <div className="flex items-center gap-2 flex-wrap">
+            {onOpenTemplates && (
+              <button
+                type="button"
+                onClick={onOpenTemplates}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-950/60 dark:hover:bg-emerald-900 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-750 text-xs font-bold transition-all cursor-pointer shadow-2xs active:scale-95"
+              >
+                <span>📚</span>
+                <span>Premade Templates (Instant)</span>
+              </button>
+            )}
+            {onOpenCommunityGallery && (
+              <button
+                type="button"
+                onClick={onOpenCommunityGallery}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-50 hover:bg-amber-100 dark:bg-slate-800 dark:hover:bg-slate-750 text-amber-900 dark:text-amber-300 border border-amber-300 dark:border-slate-700 text-xs font-bold transition-all cursor-pointer shadow-2xs active:scale-95"
+              >
+                <span>🌍</span>
+                <span>Community Gallery</span>
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Content Moderation Warning */}

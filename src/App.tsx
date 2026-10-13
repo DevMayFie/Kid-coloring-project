@@ -15,7 +15,11 @@ import { BatchRegenerateModal } from './components/BatchRegenerateModal';
 import { BrandIntegrationModal } from './components/BrandIntegrationModal';
 import { WebsiteIntegrationsModal } from './components/WebsiteIntegrationsModal';
 import { BonusActivitiesModal } from './components/BonusActivitiesModal';
+import { TemplateLibraryModal } from './components/TemplateLibraryModal';
+import { CommunityGalleryModal } from './components/CommunityGalleryModal';
+import { BookShareModal } from './components/BookShareModal';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { testFirestoreConnection } from './utils/firebase';
 import {
   ColoringBook,
   ColoringPage,
@@ -79,6 +83,9 @@ export default function App() {
   const [isBrandModalOpen, setIsBrandModalOpen] = useState(false);
   const [isWebsiteModalOpen, setIsWebsiteModalOpen] = useState(false);
   const [isActivitiesModalOpen, setIsActivitiesModalOpen] = useState(false);
+  const [isTemplatesModalOpen, setIsTemplatesModalOpen] = useState(false);
+  const [isCommunityModalOpen, setIsCommunityModalOpen] = useState(false);
+  const [isShareModalOpen, setIsShareModalOpen] = useState(false);
   const [isBatchGenerating, setIsBatchGenerating] = useState(false);
   const [batchProgress, setBatchProgress] = useState<{
     current: number;
@@ -140,6 +147,7 @@ export default function App() {
 
     // Guarantee that storageReady has completed before marking hydrated
     initServerSession().catch((err) => console.warn('Session sync warning:', err));
+    testFirestoreConnection().catch((err) => console.warn('Firestore initial ping:', err));
     storageReady()
       .then(() => {
         if (isMounted) {
@@ -1230,6 +1238,9 @@ export default function App() {
         onOpenBrandModal={() => setIsBrandModalOpen(true)}
         onOpenWebsiteModal={() => setIsWebsiteModalOpen(true)}
         onOpenActivitiesModal={() => setIsActivitiesModalOpen(true)}
+        onOpenTemplates={() => setIsTemplatesModalOpen(true)}
+        onOpenCommunityGallery={() => setIsCommunityModalOpen(true)}
+        onOpenBookShare={() => setIsShareModalOpen(true)}
         brandIntegration={book.brandIntegration}
         hasCustomBrand={Boolean(book.brandIntegration?.enabled)}
         isGeneratingPdf={false}
@@ -1304,6 +1315,9 @@ export default function App() {
           initialAspectRatio={book.aspectRatio}
           isGenerating={isGeneratingBook}
           onGenerateBook={handleGenerateBook}
+          onOpenTemplates={() => setIsTemplatesModalOpen(true)}
+          onOpenCommunityGallery={() => setIsCommunityModalOpen(true)}
+          onOpenBookShare={() => setIsShareModalOpen(true)}
         />
 
         {/* Session History Section: View and quickly re-load up to 5 previously generated coloring books */}
@@ -1367,6 +1381,9 @@ export default function App() {
             onOpenBrandModal={() => setIsBrandModalOpen(true)}
             onOpenWebsiteModal={() => setIsWebsiteModalOpen(true)}
             onOpenActivitiesModal={() => setIsActivitiesModalOpen(true)}
+            onOpenTemplates={() => setIsTemplatesModalOpen(true)}
+            onOpenCommunityGallery={() => setIsCommunityModalOpen(true)}
+            onOpenBookShare={() => setIsShareModalOpen(true)}
           />
         </ErrorBoundary>
       </main>
@@ -1474,6 +1491,46 @@ export default function App() {
           } finally {
             setIsRegeneratingSingle(false);
           }
+        }}
+      />
+
+      {/* Instant Premade Templates Modal */}
+      <TemplateLibraryModal
+        isOpen={isTemplatesModalOpen}
+        onClose={() => setIsTemplatesModalOpen(false)}
+        currentChildName={book.childName}
+        onSelectTemplate={(templateBook) => {
+          setBook(templateBook);
+          saveBookToLocalStorage(templateBook);
+          setHistoryBooks(addBookToSessionHistory(templateBook));
+          playChimeSound('fanfare');
+        }}
+      />
+
+      {/* Community Coloring Gallery Modal */}
+      <CommunityGalleryModal
+        isOpen={isCommunityModalOpen}
+        onClose={() => setIsCommunityModalOpen(false)}
+        currentBook={book}
+        onLoadBook={(communityBook) => {
+          setBook(communityBook);
+          saveBookToLocalStorage(communityBook);
+          setHistoryBooks(addBookToSessionHistory(communityBook));
+          playChimeSound('fanfare');
+        }}
+        onOpenImportModal={() => setIsShareModalOpen(true)}
+      />
+
+      {/* Standalone .colorkid Book Import & Export Modal */}
+      <BookShareModal
+        isOpen={isShareModalOpen}
+        onClose={() => setIsShareModalOpen(false)}
+        currentBook={book}
+        onImportBook={(importedBook) => {
+          setBook(importedBook);
+          saveBookToLocalStorage(importedBook);
+          setHistoryBooks(addBookToSessionHistory(importedBook));
+          playChimeSound('fanfare');
         }}
       />
     </div>

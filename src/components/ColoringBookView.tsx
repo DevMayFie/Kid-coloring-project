@@ -77,6 +77,9 @@ interface ColoringBookViewProps {
   onOpenBrandModal?: () => void;
   onOpenWebsiteModal?: () => void;
   onOpenActivitiesModal?: () => void;
+  onOpenTemplates?: () => void;
+  onOpenCommunityGallery?: () => void;
+  onOpenBookShare?: () => void;
 }
 
 export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
@@ -108,6 +111,9 @@ export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
   onOpenBrandModal,
   onOpenWebsiteModal,
   onOpenActivitiesModal,
+  onOpenTemplates,
+  onOpenCommunityGallery,
+  onOpenBookShare,
 }) => {
   const [selectedPreviewImg, setSelectedPreviewImg] = useState<{ url: string; title: string } | null>(null);
   const [regeneratingIds, setRegeneratingIds] = useState<Record<string, boolean>>({});
@@ -449,6 +455,30 @@ export const ColoringBookView: React.FC<ColoringBookViewProps> = ({
               >
                 <Eye className="w-4 h-4 text-amber-700" />
                 <span>Print Preview</span>
+              </button>
+            )}
+
+            {onOpenCommunityGallery && (
+              <button
+                type="button"
+                onClick={onOpenCommunityGallery}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-linear-to-r from-rose-500 to-amber-500 hover:from-rose-600 hover:to-amber-600 text-white text-xs font-black transition-all cursor-pointer shadow-xs active:scale-95"
+                title="Open community gallery to share or browse books from other users"
+              >
+                <span>🌍</span>
+                <span>Community ({book.pages.length}p)</span>
+              </button>
+            )}
+
+            {onOpenBookShare && (
+              <button
+                type="button"
+                onClick={onOpenBookShare}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white hover:bg-amber-50 text-gray-800 border border-amber-300 text-xs font-bold transition-all cursor-pointer shadow-xs"
+                title="Export or Import this coloring book as a shareable file"
+              >
+                <span>📦</span>
+                <span>Share File</span>
               </button>
             )}
 

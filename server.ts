@@ -1127,14 +1127,45 @@ export function checkSingleInstanceDeployment(): {
 
 /**
  * Verifies production deployment architecture.
- * Warns if multi-instance is configured without distributed atomic stores.
+ * In production, file-based stores require single-instance deployment (e.g. SINGLE_INSTANCE=true or CLOUD_RUN_MAX_INSTANCES=1).
+ * Multi-instance deployment requires distributed stores (neither budget nor quota store is file-based).
+ * Throws a fatal error in production when the configuration is unsafe.
  */
-export function verifyProductionDeploymentConfiguration(): { singleInstanceOnly: boolean; distributedSafetyConfigured: boolean } {
+export function verifyProductionDeploymentConfiguration(): {
+  singleInstanceOnly: boolean;
+  distributedSafetyConfigured: boolean;
+  isFileBased: boolean;
+  isSingleInstance: boolean;
+} {
   const isDistributedBudget = !(activeBudgetStore instanceof FileBudgetStore);
   const isDistributedQuota = !(activeQuotaStore instanceof FileQuotaStore);
   const distributedSafetyConfigured = isDistributedBudget && isDistributedQuota;
 
-  if (process.env.AI_MULTI_INSTANCE_DEPLOYMENT === 'true' && !distributedSafetyConfigured) {
+  const isConfiguredSingleInstance =
+    process.env.SINGLE_INSTANCE === 'true' ||
+    process.env.AI_SINGLE_INSTANCE === 'true' ||
+    process.env.CLOUD_RUN_MAX_INSTANCES === '1' ||
+    process.env.MAX_INSTANCES === '1';
+
+  const isMultiInstanceExplicit = process.env.AI_MULTI_INSTANCE_DEPLOYMENT === 'true';
+
+  // In production (outside development/test), enforce safety for file-based stores
+  if (isProduction && process.env.NODE_ENV !== 'test') {
+    if (!distributedSafetyConfigured) {
+      if (isMultiInstanceExplicit) {
+        throw new Error(
+          'FATAL: Incompatible production deployment configuration. AI_MULTI_INSTANCE_DEPLOYMENT is enabled, but file-based budget/quota stores are in use. Multi-instance deployment requires distributed stores (e.g. database or Redis via setBudgetStore and setQuotaStore). Note that single-instance configuration does not make local file storage durable across container restarts or instance replacement.'
+        );
+      }
+      if (!isConfiguredSingleInstance) {
+        throw new Error(
+          'FATAL: Incompatible production deployment configuration. File-based budget and quota stores are in use without single-instance enforcement. Production deployment with local file storage requires single-instance configuration (set SINGLE_INSTANCE=true or CLOUD_RUN_MAX_INSTANCES=1). Note that single-instance configuration restricts concurrency but does not make local file storage durable across container restarts or instance replacement.'
+        );
+      }
+    }
+  }
+
+  if (isMultiInstanceExplicit && !distributedSafetyConfigured) {
     console.warn(
       'CRITICAL DEPLOYMENT WARNING: AI_MULTI_INSTANCE_DEPLOYMENT is enabled, but single-instance File stores are in use. ' +
         'FileBudgetStore and FileQuotaStore cannot provide cross-instance distributed atomic locks. ' +
@@ -1145,6 +1176,8 @@ export function verifyProductionDeploymentConfiguration(): { singleInstanceOnly:
   return {
     singleInstanceOnly: !distributedSafetyConfigured,
     distributedSafetyConfigured,
+    isFileBased: !distributedSafetyConfigured,
+    isSingleInstance: isConfiguredSingleInstance,
   };
 }
 
@@ -2650,6 +2683,7 @@ app.post('/api/verify-parental-consent', consentRateLimiter, (req, res) => {
   }
 });
 
+// Retention of photos sent to the Gemini API depends on the Google AI Studio project's logging setting. This route does not set a per-request store option. Do not claim any specific retention period in the UI unless the project logging setting has been confirmed.
 // Endpoint: Convert child or pet photo into personalized coloring book line-art with strict size caps
 app.post('/api/photo-to-line-art', (req, res, next) => {
   if (!isPhotoToLineArtEnabled) {
@@ -3119,6 +3153,9 @@ app.post('/api/chat/clear', (req, res) => {
 export async function startServer(port = PORT) {
   // Startup check: Loud warning if budget/quota stores are file-based and not configured as single-instance
   checkSingleInstanceDeployment();
+
+  // Production deployment safety verification: Fails fast if configuration is incompatible with budget/quota stores
+  verifyProductionDeploymentConfiguration();
 
   if (isProduction && !process.env.CONSENT_SECRET) {
     throw new Error('FATAL: CONSENT_SECRET environment variable is required outside development.');

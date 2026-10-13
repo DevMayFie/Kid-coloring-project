@@ -1,0 +1,99 @@
+{
+  "entities": {
+    "CommunityColoringBook": {
+      "title": "CommunityColoringBook",
+      "description": "A kid-safe published coloring book shared to the public community gallery",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique book identifier",
+          "maxLength": 128
+        },
+        "title": {
+          "type": "string",
+          "description": "Title of the coloring book",
+          "maxLength": 120
+        },
+        "theme": {
+          "type": "string",
+          "description": "Art theme of the book",
+          "maxLength": 100
+        },
+        "authorName": {
+          "type": "string",
+          "description": "Public author display name (or Anonymous Artist)",
+          "maxLength": 60
+        },
+        "authorUid": {
+          "type": "string",
+          "description": "UID of the user who published the book",
+          "maxLength": 128
+        },
+        "subtitle": {
+          "type": "string",
+          "description": "Short friendly subtitle or description",
+          "maxLength": 200
+        },
+        "difficulty": {
+          "type": "string",
+          "description": "Coloring difficulty tier",
+          "enum": ["toddler", "standard", "intricate"]
+        },
+        "artStyle": {
+          "type": "string",
+          "description": "Visual art style preset",
+          "maxLength": 50
+        },
+        "pageCount": {
+          "type": "number",
+          "description": "Total number of printable pages"
+        },
+        "coverSvg": {
+          "type": "string",
+          "description": "SVG vector line art for the book cover",
+          "maxLength": 250000
+        },
+        "pages": {
+          "type": "string",
+          "description": "JSON serialized array of coloring pages with vector/clean SVG art",
+          "maxLength": 800000
+        },
+        "likesCount": {
+          "type": "number",
+          "description": "Total number of likes from the community"
+        },
+        "downloadsCount": {
+          "type": "number",
+          "description": "Total number of times opened or printed"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation timestamp"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "theme",
+        "authorName",
+        "authorUid",
+        "difficulty",
+        "pageCount",
+        "coverSvg",
+        "pages",
+        "likesCount",
+        "createdAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/community_books/{bookId}": {
+      "schema": {
+        "$ref": "#/entities/CommunityColoringBook"
+      },
+      "description": "Public community collection of shared ready-to-color books"
+    }
+  }
+}

@@ -38,6 +38,9 @@ interface HeaderProps {
   onOpenBrandModal?: () => void;
   onOpenWebsiteModal?: () => void;
   onOpenActivitiesModal?: () => void;
+  onOpenTemplates?: () => void;
+  onOpenCommunityGallery?: () => void;
+  onOpenBookShare?: () => void;
   brandIntegration?: BrandIntegration;
   hasCustomBrand?: boolean;
   isGeneratingPdf: boolean;
@@ -59,6 +62,9 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenBrandModal,
   onOpenWebsiteModal,
   onOpenActivitiesModal,
+  onOpenTemplates,
+  onOpenCommunityGallery,
+  onOpenBookShare,
   brandIntegration,
   hasCustomBrand = false,
   isGeneratingPdf,
@@ -118,10 +124,10 @@ export const Header: React.FC<HeaderProps> = ({
       : null);
 
   return (
-    <header className="sticky top-0 z-30 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-b border-amber-200/70 dark:border-slate-800 px-3 sm:px-6 py-2 shadow-2xs transition-colors">
-      <div className="max-w-7xl mx-auto flex items-center justify-between gap-2 sm:gap-3">
+    <header className="sticky top-0 z-30 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-b border-amber-200/70 dark:border-slate-800 px-3 sm:px-6 py-2 shadow-2xs transition-colors isolate">
+      <div className="max-w-7xl mx-auto flex items-center justify-between gap-2 sm:gap-4">
         {/* Brand Logo & Book Title */}
-        <div className="flex items-center gap-2 sm:gap-3 min-w-0 shrink">
+        <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1 overflow-hidden">
           {/* Main App Brand Logo & Title */}
           <div className="flex items-center shrink-0">
             <BrandLogo size="sm" showText={true} compactOnMobile={true} />
@@ -130,15 +136,15 @@ export const Header: React.FC<HeaderProps> = ({
           {/* Divider between App Brand and Current Book */}
           <div className="hidden md:block h-5 w-px bg-amber-200 dark:bg-slate-700 shrink-0" />
 
-          {/* Book Title & Page Count (Hidden on mobile to avoid crowding) */}
-          <div className="hidden md:flex items-center gap-2 min-w-0">
+          {/* Book Title & Page Count (Hidden on smaller screens to prevent crowding) */}
+          <div className="hidden md:flex items-center gap-2 min-w-0 overflow-hidden">
             <h1
-              className="font-bold text-gray-900 dark:text-slate-100 text-xs sm:text-sm tracking-tight truncate max-w-[180px] lg:max-w-[280px]"
+              className="font-bold text-gray-900 dark:text-slate-100 text-xs sm:text-sm tracking-tight truncate max-w-[140px] lg:max-w-[220px]"
               title={displayTitle}
             >
               {displayTitle}
             </h1>
-            <span className="hidden lg:inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-amber-50 dark:bg-slate-800 text-amber-800 dark:text-amber-400 border border-amber-200 dark:border-slate-700 shrink-0">
+            <span className="hidden xl:inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-amber-50 dark:bg-slate-800 text-amber-800 dark:text-amber-400 border border-amber-200 dark:border-slate-700 shrink-0">
               {pageCount} Pages + Cover
             </span>
           </div>
@@ -147,19 +153,19 @@ export const Header: React.FC<HeaderProps> = ({
           {brandIntegration?.enabled && (
             <div
               onClick={onOpenBrandModal}
-              className="hidden xl:flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-linear-to-r from-amber-50 to-orange-50 border border-amber-300 text-xs text-amber-900 cursor-pointer hover:border-amber-400 hover:shadow-xs transition-all shrink-0"
+              className="hidden xl:flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-linear-to-r from-amber-50 to-orange-50 border border-amber-300 text-xs text-amber-900 cursor-pointer hover:border-amber-400 hover:shadow-xs transition-all shrink-0"
               title={`Custom organization brand active: ${brandIntegration.organizationName}. Click to edit.`}
             >
               {customLogoSrc ? (
                 <img
                   src={customLogoSrc}
                   alt={brandIntegration.organizationName}
-                  className="w-4 h-4 object-contain rounded-full bg-white shadow-2xs p-0.5"
+                  className="w-3.5 h-3.5 object-contain rounded-full bg-white shadow-2xs p-0.5"
                 />
               ) : (
                 <Building2 className="w-3.5 h-3.5 text-amber-700" />
               )}
-              <span className="font-medium text-[11px] truncate max-w-[130px]">
+              <span className="font-medium text-[11px] truncate max-w-[110px]">
                 {brandIntegration.organizationName}
               </span>
             </div>
@@ -167,107 +173,30 @@ export const Header: React.FC<HeaderProps> = ({
         </div>
 
         {/* Actions Toolbar */}
-        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
-          {/* Brand & Logo Integration Button (Desktop: lg+) */}
-          {onOpenBrandModal && (
-            <button
-              onClick={onOpenBrandModal}
-              className={`hidden lg:flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors cursor-pointer relative ${
-                hasCustomBrand
-                  ? 'bg-amber-100/90 dark:bg-amber-950/60 text-amber-950 dark:text-amber-200 border-amber-400 dark:border-amber-600 ring-1 ring-amber-300'
-                  : 'bg-white dark:bg-slate-800 hover:bg-amber-50 dark:hover:bg-slate-700 text-gray-700 dark:text-slate-200 border-gray-200 dark:border-slate-700'
-              }`}
-              id="header-brand-btn"
-              title="Configure custom organization logo, sponsor, and website URL"
-            >
-              <Building2 className={`w-3.5 h-3.5 ${hasCustomBrand ? 'text-amber-700 dark:text-amber-400' : 'text-gray-500 dark:text-slate-400'}`} />
-              <span>Brand &amp; Logo</span>
-              {hasCustomBrand && (
-                <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span>
-              )}
-            </button>
-          )}
-
-          {/* Bonus Activities & Crafts Center (Desktop: lg+) */}
-          {onOpenActivitiesModal && (
-            <button
-              onClick={onOpenActivitiesModal}
-              className="hidden lg:flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg bg-gradient-to-r from-amber-50 to-orange-50 dark:from-slate-800 dark:to-orange-950/40 hover:from-amber-100 hover:to-orange-100 text-orange-950 dark:text-orange-200 border border-orange-300/80 dark:border-slate-700 text-xs font-semibold transition-colors cursor-pointer"
-              id="header-activities-btn"
-              title="Bonus Maze Adventure, Cut-Out Bookmarks, and Color Mixing Lab"
-            >
-              <Compass className="w-3.5 h-3.5 text-orange-700 dark:text-orange-400" />
-              <span>Activities &amp; Crafts</span>
-            </button>
-          )}
-
-          {/* Website Integrations & Embed Button (Desktop: md+) */}
-          {onOpenWebsiteModal && (
-            <button
-              onClick={onOpenWebsiteModal}
-              className="hidden md:flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg bg-blue-50/90 dark:bg-slate-800 hover:bg-blue-100 dark:hover:bg-slate-700 text-blue-900 dark:text-blue-300 border border-blue-200 dark:border-slate-700 text-xs font-semibold transition-colors cursor-pointer"
-              id="header-website-btn"
-              title="Website embed widget, badges, and QR codes"
-            >
-              <Globe className="w-3.5 h-3.5 text-blue-700 dark:text-blue-400" />
-              <span>Website &amp; Embed</span>
-            </button>
-          )}
-
-          {/* History Button (sm+) */}
-          {onScrollToHistory && (
-            <button
-              onClick={onScrollToHistory}
-              className="hidden sm:flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg bg-amber-50/90 dark:bg-slate-800 hover:bg-amber-100 dark:hover:bg-slate-700 text-amber-900 dark:text-amber-300 border border-amber-200/90 dark:border-slate-700 text-xs font-semibold transition-colors cursor-pointer"
-              id="header-history-btn"
-              title="View previously generated coloring books in this session"
-            >
-              <History className="w-3.5 h-3.5 text-amber-700 dark:text-amber-400" />
-              <span>History</span>
-              {historyCount > 0 && (
-                <span className="bg-amber-200 dark:bg-amber-800 text-amber-900 dark:text-amber-100 text-[10px] font-bold px-1.5 py-0.2 rounded-full">
-                  {historyCount}
-                </span>
-              )}
-            </button>
-          )}
-
-          {/* AI Story Chat Assistant (Always visible) */}
-          <button
-            onClick={onOpenChat}
-            className="flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1.5 rounded-lg bg-indigo-50/80 dark:bg-indigo-950/60 hover:bg-indigo-100 dark:hover:bg-indigo-900/80 text-indigo-700 dark:text-indigo-300 border border-indigo-200/80 dark:border-indigo-800 text-xs font-semibold transition-colors cursor-pointer"
-            id="desktop-chat-btn"
-            title="Open AI Story Assistant"
-          >
-            <MessageSquare className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
-            <span className="hidden sm:inline">Story Chat</span>
-          </button>
-
-          {/* Print Preview Button (Desktop: xl+) */}
-          {onOpenPrintPreview && (
-            <button
-              onClick={onOpenPrintPreview}
-              title="Open full-screen Print Preview modal"
-              className="hidden xl:flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg bg-amber-50 dark:bg-slate-800 hover:bg-amber-100 dark:hover:bg-slate-700 border border-amber-300 dark:border-slate-700 text-amber-900 dark:text-amber-300 text-xs font-semibold transition-colors cursor-pointer"
-              id="header-print-preview-btn"
-            >
-              <Eye className="w-3.5 h-3.5 text-amber-700 dark:text-amber-400" />
-              <span>Print Preview</span>
-            </button>
-          )}
-
-          {/* Direct Print Button (sm+) */}
+        <div className="flex items-center gap-1 sm:gap-2 shrink-0">
+          {/* Direct Print Button (Desktop: xl+) */}
           <button
             onClick={onDirectPrint}
             title="Print entire coloring book"
-            className="hidden sm:flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg bg-gray-50 dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700 border border-gray-200 dark:border-slate-700 text-gray-700 dark:text-slate-200 text-xs font-medium transition-colors cursor-pointer"
+            className="hidden xl:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-gray-50 dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700 border border-gray-200 dark:border-slate-700 text-gray-700 dark:text-slate-200 text-xs font-medium transition-colors cursor-pointer"
             id="print-book-btn"
           >
             <Printer className="w-3.5 h-3.5 text-gray-600 dark:text-slate-400" />
             <span>Print</span>
           </button>
 
-          {/* Sound / Quiet Mode Toggle (Classroom & bedtime friendly) */}
+          {/* AI Story Chat Assistant */}
+          <button
+            onClick={onOpenChat}
+            className="flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1.5 rounded-lg bg-indigo-50/80 dark:bg-indigo-950/60 hover:bg-indigo-100 dark:hover:bg-indigo-900/80 text-indigo-700 dark:text-indigo-300 border border-indigo-200/80 dark:border-indigo-800 text-xs font-semibold transition-colors cursor-pointer"
+            id="desktop-chat-btn"
+            title="Open AI Story Assistant"
+          >
+            <MessageSquare className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400 shrink-0" />
+            <span className="hidden sm:inline">Story Chat</span>
+          </button>
+
+          {/* Sound / Quiet Mode Toggle (Classroom & bedtime friendly - hidden on mobile, accessible in More menu) */}
           <button
             type="button"
             onClick={() => {
@@ -277,7 +206,7 @@ export const Header: React.FC<HeaderProps> = ({
             }}
             title={isMuted ? 'Quiet Mode is ON (Click to unmute sound effects)' : 'Sound is ON (Click to enable Quiet Mode)'}
             aria-label={isMuted ? 'Unmute sounds' : 'Mute sounds'}
-            className={`flex items-center gap-1 sm:gap-1.5 px-2 sm:px-2.5 py-1.5 rounded-lg border text-xs font-medium transition-all cursor-pointer ${
+            className={`hidden sm:flex items-center justify-center p-1.5 sm:px-2 py-1.5 rounded-lg border text-xs font-medium transition-all cursor-pointer ${
               isMuted
                 ? 'bg-gray-100 dark:bg-slate-800 text-gray-600 dark:text-slate-400 border-gray-300 dark:border-slate-700 hover:bg-gray-200 dark:hover:bg-slate-700'
                 : 'bg-amber-50/80 dark:bg-slate-800 hover:bg-amber-100 dark:hover:bg-slate-700 text-amber-900 dark:text-amber-300 border-amber-200 dark:border-slate-700 hover:border-amber-300'
@@ -285,43 +214,24 @@ export const Header: React.FC<HeaderProps> = ({
             id="header-quiet-mode-btn"
           >
             {isMuted ? (
-              <VolumeX className="w-3.5 h-3.5 text-gray-500 dark:text-slate-400" />
+              <VolumeX className="w-3.5 h-3.5 text-gray-500 dark:text-slate-400 shrink-0" />
             ) : (
-              <Volume2 className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+              <Volume2 className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
             )}
-            <span className="hidden xl:inline text-[11px] font-bold">
-              {isMuted ? 'Quiet' : 'Sound'}
-            </span>
           </button>
 
           {/* Download Full PDF Button (Always prominent) */}
           <button
             onClick={onDownloadPdf}
             disabled={isGeneratingPdf}
-            className="flex items-center gap-1 sm:gap-1.5 px-2.5 sm:px-3.5 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 active:scale-98 text-white text-xs font-bold shadow-xs transition-all disabled:opacity-50 cursor-pointer"
+            className="flex items-center gap-1 sm:gap-1.5 px-2.5 sm:px-3.5 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 active:scale-98 text-white text-xs font-bold shadow-xs transition-all disabled:opacity-50 cursor-pointer shrink-0"
             id="download-pdf-btn"
           >
-            <Download className="w-3.5 h-3.5" />
+            <Download className="w-3.5 h-3.5 shrink-0" />
             <span>{isGeneratingPdf ? '...' : 'PDF Book'}</span>
           </button>
 
-          {/* Export Code (.ZIP) Button - Visible in development environment only */}
-          {import.meta.env.DEV && (
-            <a
-              href="/api/download-project"
-              download="coloring-book-studio-latest.zip"
-              onClick={() => playChimeSound('sparkle')}
-              className="flex items-center gap-1 sm:gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 active:scale-98 text-white text-xs font-bold shadow-xs transition-all cursor-pointer"
-              id="header-export-code-btn"
-              title="Download full project source code (.ZIP archive) with all latest changes"
-            >
-              <FolderDown className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Export Code (.ZIP)</span>
-              <span className="sm:hidden">ZIP</span>
-            </a>
-          )}
-
-          {/* Global Dark Mode Toggle */}
+          {/* Global Dark Mode Toggle (hidden on mobile, accessible in More menu) */}
           {onToggleDarkMode && (
             <button
               type="button"
@@ -331,22 +241,20 @@ export const Header: React.FC<HeaderProps> = ({
               }}
               title={isDarkMode ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
               aria-label="Toggle dark mode"
-              className="flex items-center justify-center p-1.5 sm:px-2.5 sm:py-1.5 rounded-lg border text-xs font-medium transition-all cursor-pointer bg-gray-50 dark:bg-slate-800 text-gray-700 dark:text-amber-300 border-gray-200 dark:border-slate-700 hover:bg-gray-100 dark:hover:bg-slate-700"
+              className="hidden sm:flex items-center justify-center p-1.5 sm:px-2 py-1.5 rounded-lg border text-xs font-medium transition-all cursor-pointer bg-gray-50 dark:bg-slate-800 text-gray-700 dark:text-amber-300 border-gray-200 dark:border-slate-700 hover:bg-gray-100 dark:hover:bg-slate-700 shrink-0"
               id="header-dark-mode-btn"
             >
               {isDarkMode ? (
-                <Sun className="w-4 h-4 text-amber-400" />
+                <Sun className="w-4 h-4 text-amber-400 shrink-0" />
               ) : (
-                <Moon className="w-4 h-4 text-slate-600 dark:text-slate-300" />
+                <Moon className="w-4 h-4 text-slate-600 dark:text-slate-300 shrink-0" />
               )}
-              <span className="hidden xl:inline ml-1 text-[11px] font-bold">
-                {isDarkMode ? 'Light' : 'Dark'}
-              </span>
             </button>
           )}
 
+
           {/* "More Tools & Export" Menu Button */}
-          <div className="relative" ref={menuRef}>
+          <div className="relative shrink-0" ref={menuRef}>
             <button
               onClick={() => setIsMoreMenuOpen((prev) => !prev)}
               aria-label="More options"
@@ -366,7 +274,7 @@ export const Header: React.FC<HeaderProps> = ({
 
             {/* Dropdown Menu */}
             {isMoreMenuOpen && (
-              <div className="absolute right-0 top-full mt-2 w-72 bg-white dark:bg-slate-900 rounded-xl shadow-xl border border-amber-200/90 dark:border-slate-800 py-1.5 z-50 divide-y divide-gray-100 dark:divide-slate-800 transition-all animate-in fade-in slide-in-from-top-2 duration-150">
+              <div className="absolute right-0 top-full mt-2 w-72 max-w-[calc(100vw-1.5rem)] bg-white dark:bg-slate-900 rounded-xl shadow-xl border border-amber-200/90 dark:border-slate-800 py-1.5 z-50 divide-y divide-gray-100 dark:divide-slate-800 transition-all animate-in fade-in slide-in-from-top-2 duration-150">
                 <div className="px-3 py-2 bg-amber-50/60 dark:bg-slate-800/80">
                   <div className="text-[11px] font-bold uppercase tracking-wider text-amber-800 dark:text-amber-400">
                     Book Tools &amp; Sharing
@@ -377,6 +285,82 @@ export const Header: React.FC<HeaderProps> = ({
                 </div>
 
                 <div className="py-1">
+                  {/* Ready-to-Color Templates Option */}
+                  {onOpenTemplates && (
+                    <button
+                      onClick={() => {
+                        setIsMoreMenuOpen(false);
+                        onOpenTemplates();
+                      }}
+                      className="w-full flex items-center justify-between px-3 py-2 text-left text-xs hover:bg-emerald-50 dark:hover:bg-slate-800 transition-colors group cursor-pointer"
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div className="p-1.5 rounded-lg bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">
+                          <BookOpen className="w-3.5 h-3.5" />
+                        </div>
+                        <div className="min-w-0">
+                          <div className="font-semibold text-gray-900 dark:text-white flex items-center gap-1.5">
+                            <span>Premade Templates</span>
+                            <span className="text-[10px] bg-emerald-100 dark:bg-emerald-900 text-emerald-800 dark:text-emerald-300 px-1.5 py-0.2 rounded-full font-bold">
+                              Instant
+                            </span>
+                          </div>
+                          <div className="text-[11px] text-gray-500 truncate">Ready-to-color books, zero wait</div>
+                        </div>
+                      </div>
+                      <ChevronRight className="w-3.5 h-3.5 text-gray-400 group-hover:text-emerald-600 transition-transform group-hover:translate-x-0.5" />
+                    </button>
+                  )}
+
+                  {/* Community Gallery Option */}
+                  {onOpenCommunityGallery && (
+                    <button
+                      onClick={() => {
+                        setIsMoreMenuOpen(false);
+                        onOpenCommunityGallery();
+                      }}
+                      className="w-full flex items-center justify-between px-3 py-2 text-left text-xs hover:bg-rose-50 dark:hover:bg-slate-800 transition-colors group cursor-pointer"
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div className="p-1.5 rounded-lg bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300">
+                          <Globe className="w-3.5 h-3.5" />
+                        </div>
+                        <div className="min-w-0">
+                          <div className="font-semibold text-gray-900 dark:text-white flex items-center gap-1.5">
+                            <span>Community Gallery</span>
+                            <span className="text-[10px] bg-rose-100 dark:bg-rose-900 text-rose-800 dark:text-rose-300 px-1.5 py-0.2 rounded-full font-bold">
+                              Shared
+                            </span>
+                          </div>
+                          <div className="text-[11px] text-gray-500 truncate">Discover &amp; color books from others</div>
+                        </div>
+                      </div>
+                      <ChevronRight className="w-3.5 h-3.5 text-gray-400 group-hover:text-rose-600 transition-transform group-hover:translate-x-0.5" />
+                    </button>
+                  )}
+
+                  {/* Share & Import Books Option */}
+                  {onOpenBookShare && (
+                    <button
+                      onClick={() => {
+                        setIsMoreMenuOpen(false);
+                        onOpenBookShare();
+                      }}
+                      className="w-full flex items-center justify-between px-3 py-2 text-left text-xs hover:bg-blue-50 dark:hover:bg-slate-800 transition-colors group cursor-pointer"
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div className="p-1.5 rounded-lg bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300">
+                          <FolderDown className="w-3.5 h-3.5" />
+                        </div>
+                        <div className="min-w-0">
+                          <div className="font-semibold text-gray-900 dark:text-white">Import &amp; Export Book</div>
+                          <div className="text-[11px] text-gray-500 truncate">Save or load .colorkid files</div>
+                        </div>
+                      </div>
+                      <ChevronRight className="w-3.5 h-3.5 text-gray-400 group-hover:text-blue-600 transition-transform group-hover:translate-x-0.5" />
+                    </button>
+                  )}
+
                   {/* Brand & Logo Option */}
                   {onOpenBrandModal && (
                     <button

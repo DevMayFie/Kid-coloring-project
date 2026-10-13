@@ -1,0 +1,73 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Default deny all unknown collections
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidCommunityBook(data) {
+      return data.id is string && data.id.size() <= 128 &&
+             data.title is string && data.title.size() > 0 && data.title.size() <= 120 &&
+             data.theme is string && data.theme.size() > 0 && data.theme.size() <= 100 &&
+             data.authorName is string && data.authorName.size() > 0 && data.authorName.size() <= 60 &&
+             data.authorUid is string && data.authorUid.size() <= 128 &&
+             data.difficulty in ['toddler', 'standard', 'intricate'] &&
+             data.pageCount is number && data.pageCount >= 1 && data.pageCount <= 20 &&
+             data.coverSvg is string && data.coverSvg.size() <= 250000 &&
+             data.pages is string && data.pages.size() <= 800000 &&
+             data.likesCount is number && data.likesCount >= 0 &&
+             (!('subtitle' in data) || (data.subtitle is string && data.subtitle.size() <= 200)) &&
+             (!('artStyle' in data) || (data.artStyle is string && data.artStyle.size() <= 50)) &&
+             (!('downloadsCount' in data) || (data.downloadsCount is number && data.downloadsCount >= 0));
+    }
+
+    match /community_books/{bookId} {
+      // Anyone can browse or read published coloring books
+      allow get, list: if true;
+
+      // Anyone signed in (or anonymous/authenticated) can share a book they authored
+      allow create: if isValidId(bookId) &&
+                       isSignedIn() &&
+                       request.resource.data.authorUid == request.auth.uid &&
+                       isValidCommunityBook(request.resource.data) &&
+                       request.resource.data.createdAt == request.time &&
+                       request.resource.data.likesCount == 0;
+
+      // Updating: author can update text details, or anyone signed in can increment likes/downloads
+      allow update: if isValidId(bookId) &&
+                       isSignedIn() &&
+                       isValidCommunityBook(request.resource.data) &&
+                       request.resource.data.id == resource.data.id &&
+                       request.resource.data.createdAt == resource.data.createdAt &&
+                       request.resource.data.authorUid == resource.data.authorUid &&
+                       (
+                         // Action 1: Like increment
+                         (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likesCount']) &&
+                          request.resource.data.likesCount == resource.data.likesCount + 1)
+                         ||
+                         // Action 2: Download/Open increment
+                         (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['downloadsCount']) &&
+                          request.resource.data.downloadsCount >= resource.data.downloadsCount)
+                         ||
+                         // Action 3: Author updating book title, subtitle, or art
+                         (request.auth.uid == resource.data.authorUid &&
+                          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['title', 'subtitle', 'coverSvg', 'pages']))
+                       );
+
+      // Deleting: only original author can delete their shared book
+      allow delete: if isValidId(bookId) &&
+                       isSignedIn() &&
+                       resource.data.authorUid == request.auth.uid;
+    }
+  }
+}

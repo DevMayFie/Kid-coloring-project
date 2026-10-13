@@ -1345,6 +1345,7 @@ describe('ColorKid Production Readiness & Security Test Suite', () => {
     it('The server refuses to start outside development without CONSENT_SECRET', async () => {
       const proc = spawnSync('npx', ['tsx', '-e', `
         process.env.NODE_ENV = 'production';
+        process.env.SINGLE_INSTANCE = 'true';
         delete process.env.CONSENT_SECRET;
         import('./server.ts').then(async (m) => {
           await m.startServer(0);
@@ -1360,6 +1361,109 @@ describe('ColorKid Production Readiness & Security Test Suite', () => {
       assert.equal(proc.status, 99);
       const output = `${proc.stdout} ${proc.stderr}`;
       assert.match(output, /FATAL: CONSENT_SECRET environment variable is required outside development/i);
+    });
+
+    it('production startup fails immediately when file-based stores lack single-instance configuration', async () => {
+      const proc = spawnSync('npx', ['tsx', '-e', `
+        process.env.NODE_ENV = 'production';
+        process.env.CONSENT_SECRET = 'a-secure-production-secret-of-sufficient-length';
+        delete process.env.SINGLE_INSTANCE;
+        delete process.env.AI_SINGLE_INSTANCE;
+        delete process.env.CLOUD_RUN_MAX_INSTANCES;
+        delete process.env.MAX_INSTANCES;
+        delete process.env.AI_MULTI_INSTANCE_DEPLOYMENT;
+
+        import('./server.ts').then(async (m) => {
+          await m.startServer(0);
+        }).catch((err) => {
+          console.error('FATAL_ERR:', err.message);
+          process.exit(88);
+        });
+      `], {
+        encoding: 'utf8',
+        timeout: 10000,
+      });
+
+      assert.equal(proc.status, 88);
+      const output = `${proc.stdout} ${proc.stderr}`;
+      assert.match(output, /FATAL: Incompatible production deployment configuration/i);
+      assert.match(output, /File-based budget and quota stores are in use without single-instance enforcement/i);
+      assert.match(output, /does not make local file storage durable/i);
+    });
+
+    it('production startup fails immediately when AI_MULTI_INSTANCE_DEPLOYMENT is enabled with file-based stores', async () => {
+      const proc = spawnSync('npx', ['tsx', '-e', `
+        process.env.NODE_ENV = 'production';
+        process.env.CONSENT_SECRET = 'a-secure-production-secret-of-sufficient-length';
+        process.env.AI_MULTI_INSTANCE_DEPLOYMENT = 'true';
+
+        import('./server.ts').then(async (m) => {
+          await m.startServer(0);
+        }).catch((err) => {
+          console.error('FATAL_ERR:', err.message);
+          process.exit(77);
+        });
+      `], {
+        encoding: 'utf8',
+        timeout: 10000,
+      });
+
+      assert.equal(proc.status, 77);
+      const output = `${proc.stdout} ${proc.stderr}`;
+      assert.match(output, /FATAL: Incompatible production deployment configuration/i);
+      assert.match(output, /AI_MULTI_INSTANCE_DEPLOYMENT is enabled, but file-based budget\/quota stores are in use/i);
+      assert.match(output, /does not make local file storage durable/i);
+    });
+
+    it('production startup succeeds when properly configured with single-instance mode and file stores', async () => {
+      const proc = spawnSync('npx', ['tsx', '-e', `
+        process.env.NODE_ENV = 'production';
+        process.env.CONSENT_SECRET = 'a-secure-production-secret-of-sufficient-length';
+        process.env.SINGLE_INSTANCE = 'true';
+
+        import('./server.ts').then(async (m) => {
+          const srv = await m.startServer(0);
+          srv.close(() => {
+            console.log('SUCCESS_STARTED_AND_CLOSED');
+            process.exit(0);
+          });
+        }).catch((err) => {
+          console.error('FATAL_ERR:', err.message);
+          process.exit(1);
+        });
+      `], {
+        encoding: 'utf8',
+        timeout: 10000,
+      });
+
+      assert.equal(proc.status, 0);
+      assert.match(proc.stdout, /SUCCESS_STARTED_AND_CLOSED/);
+    });
+
+    it('development environment starts normally without single-instance environment variable', async () => {
+      const proc = spawnSync('npx', ['tsx', '-e', `
+        process.env.NODE_ENV = 'development';
+        delete process.env.CONSENT_SECRET;
+        delete process.env.SINGLE_INSTANCE;
+        delete process.env.CLOUD_RUN_MAX_INSTANCES;
+
+        import('./server.ts').then(async (m) => {
+          const srv = await m.startServer(0);
+          srv.close(() => {
+            console.log('SUCCESS_DEV_STARTED');
+            process.exit(0);
+          });
+        }).catch((err) => {
+          console.error('FATAL_ERR:', err.message);
+          process.exit(1);
+        });
+      `], {
+        encoding: 'utf8',
+        timeout: 10000,
+      });
+
+      assert.equal(proc.status, 0);
+      assert.match(proc.stdout, /SUCCESS_DEV_STARTED/);
     });
   });
 
