@@ -3180,7 +3180,10 @@ export async function startServer(port = PORT) {
   });
 }
 
-if (process.env.NODE_ENV !== 'test' && !process.argv.some((arg) => arg.includes('.test.'))) {
+if (
+  process.env.NODE_ENV !== 'test' &&
+  !process.argv.some((arg) => arg.includes('.test.') || arg === '-e' || arg === '--eval')
+) {
   startServer();
 }
 

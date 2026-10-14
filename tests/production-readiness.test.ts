@@ -1448,11 +1448,16 @@ describe('ColorKid Production Readiness & Security Test Suite', () => {
         delete process.env.CLOUD_RUN_MAX_INSTANCES;
 
         import('./server.ts').then(async (m) => {
-          const srv = await m.startServer(0);
-          srv.close(() => {
+          // verifyProductionDeploymentConfiguration and checkSingleInstanceDeployment must not throw in development
+          const res = m.verifyProductionDeploymentConfiguration();
+          const singleRes = m.checkSingleInstanceDeployment();
+          if (res.isFileBased === true && res.isSingleInstance === false && singleRes.warningIssued === true) {
             console.log('SUCCESS_DEV_STARTED');
             process.exit(0);
-          });
+          } else {
+            console.error('Unexpected result in dev:', res, singleRes);
+            process.exit(2);
+          }
         }).catch((err) => {
           console.error('FATAL_ERR:', err.message);
           process.exit(1);
